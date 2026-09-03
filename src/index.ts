@@ -11,7 +11,7 @@ const { Pool } = pg
 const QUEUE_NAME = 'scan_requests'
 
 const RABBITMQ_URL = process.env.RABBITMQ_URL
-if (!rabbitmqUrl) {
+if (!RABBITMQ_URL) {
   throw new Error('RABBITMQ_URL is not set')
 }
 
