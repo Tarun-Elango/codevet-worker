@@ -11,10 +11,6 @@ const { Pool } = pg
 const QUEUE_NAME = 'scan_requests'
 
 const RABBITMQ_URL = process.env.RABBITMQ_URL
-if (!RABBITMQ_URL) {
-  throw new Error('RABBITMQ_URL is not set')
-}
-
 const DATABASE_URL = process.env.DATABASE_URL
 
 const PORT = Number(process.env.PORT ?? 3000)
@@ -29,9 +25,10 @@ if (!RABBITMQ_URL) {
 if (!DATABASE_URL) {
   throw new Error('DATABASE_URL is not set')
 }
-
+const rabbitmqUrl: string = RABBITMQ_URL
+const databaseUrl: string = DATABASE_URL
 const pool = new Pool({
-  connectionString: DATABASE_URL,
+  connectionString: databaseUrl,
 })
 
 type ScanJob = {
@@ -42,6 +39,7 @@ type ScanJob = {
 let rabbitConnection: ChannelModel | null = null
 let rabbitChannel: Channel | null = null
 let workerReady = false
+
 
 const app = new Hono()
 
@@ -189,7 +187,7 @@ async function processJob(
 async function startWorker() {
   console.log('Connecting to RabbitMQ...')
 
-  rabbitConnection = await amqp.connect(RABBITMQ_URL)
+  rabbitConnection = await amqp.connect(rabbitmqUrl)
 
   rabbitConnection.on('error', (error) => {
     console.error('RabbitMQ connection error:', error)
