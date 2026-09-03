@@ -6,6 +6,7 @@ import amqp from 'amqplib'
 import type { Channel, ChannelModel, ConsumeMessage } from 'amqplib'
 import pg from 'pg'
 import 'dotenv/config'
+import { processRequest, type ScanJob } from './worker.js'
 const { Pool } = pg
 
 const QUEUE_NAME = 'scan_requests'
@@ -31,10 +32,6 @@ const pool = new Pool({
   connectionString: databaseUrl,
 })
 
-type ScanJob = {
-  uid: string
-  repoUrl: string
-}
 
 let rabbitConnection: ChannelModel | null = null
 let rabbitChannel: Channel | null = null
@@ -110,78 +107,7 @@ async function processJob(
 
     return
   }
-
-  const { uid, repoUrl } = job
-
-  try {
-    console.log(`[${uid}] Starting ${repoUrl}`)
-
-    const result = await pool.query(
-      `
-        UPDATE requests
-        SET status = 'processing'
-        WHERE uid = $1
-        RETURNING uid
-      `,
-      [uid]
-    )
-
-    if (result.rowCount === 0) {
-      console.error(`[${uid}] Request does not exist in database`)
-
-      // Nothing useful can be done with this job.
-      channel.ack(msg)
-
-      return
-    }
-
-    /*
-     * ------------------------------------------------
-     * Actual scanner logic will eventually go here.
-     * ------------------------------------------------
-     */
-
-    console.log(`[${uid}] Work performed`)
-
-    /*
-     * ------------------------------------------------
-     */
-
-    await pool.query(
-      `
-        UPDATE requests
-        SET status = 'completed'
-        WHERE uid = $1
-      `,
-      [uid]
-    )
-
-    channel.ack(msg)
-
-    console.log(`[${uid}] Completed`)
-  } catch (error) {
-    console.error(`[${uid}] Worker failed:`, error)
-
-    try {
-      await pool.query(
-        `
-          UPDATE requests
-          SET status = 'queued'
-          WHERE uid = $1
-        `,
-        [uid]
-      )
-    } catch (dbError) {
-      console.error(
-        `[${uid}] Failed to reset database status:`,
-        dbError
-      )
-    }
-
-    // For now assume unexpected failures may be transient.
-    // Put the message back onto RabbitMQ.
-    channel.nack(msg, false, true)
-  }
+  await processRequest(pool, channel, msg, job)   
 }
 
 async function startWorker() {
@@ -206,6 +132,7 @@ async function startWorker() {
 
   await rabbitChannel.prefetch(WORKER_CONCURRENCY)
 
+  // tells mq, when message arrives call this callback
   await rabbitChannel.consume(
     QUEUE_NAME,
     (msg) => {
@@ -276,3 +203,32 @@ process.on('SIGTERM', () => {
 process.on('SIGINT', () => {
   void shutdown('SIGINT')
 })
+
+
+
+/**
+CREATE TABLE repo_results (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+
+    uid UUID NOT NULL,
+    repo_identifier TEXT NOT NULL,
+    repo_url TEXT NOT NULL,
+
+    commit_sha TEXT,
+
+    summary TEXT,
+    findings JSONB,
+
+    scanned_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+    UNIQUE (uid, repo_identifier)
+); 
+ 
+CREATE TABLE requests (
+    uid UUID PRIMARY KEY,
+    repo_url TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    ip_address INET,
+    status VARCHAR(32) NOT NULL DEFAULT 'queued'
+);
+ */
