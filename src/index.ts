@@ -5,12 +5,16 @@ import { Hono } from 'hono'
 import amqp from 'amqplib'
 import type { Channel, ChannelModel, ConsumeMessage } from 'amqplib'
 import pg from 'pg'
-
+import 'dotenv/config'
 const { Pool } = pg
 
 const QUEUE_NAME = 'scan_requests'
 
 const RABBITMQ_URL = process.env.RABBITMQ_URL
+if (!rabbitmqUrl) {
+  throw new Error('RABBITMQ_URL is not set')
+}
+
 const DATABASE_URL = process.env.DATABASE_URL
 
 const PORT = Number(process.env.PORT ?? 3000)
