@@ -125,21 +125,12 @@ export const scannerTemplate = Sandbox.template()
   .run(`
     set -eux
 
-    # Dedicated non-root account for scanning
-    useradd \
-      --create-home \
-      --uid 10001 \
-      --shell /bin/bash \
-      scanner
+    command -v git
+    command -v rg
+    command -v useradd
+    command -v runuser
 
     mkdir -p /workspace
-    chown scanner:scanner /workspace
-
-    # Defense-in-depth Git configuration
-    git config --system core.hooksPath /dev/null
-    git config --system protocol.file.allow never
-    git config --system protocol.ext.allow never
-    git config --system submodule.recurse false
   `)
   .workdir('/workspace')
 
@@ -257,7 +248,7 @@ export async function processRequest(
       )
     } catch (dbError) {
       console.error(
-        `[${uid}] Failed to reset database status:`,
+        `[${uid}] Failed to update database status:`,
         dbError
       )
     }
@@ -273,20 +264,27 @@ async function runScannerContainer(
 
   console.log(`[${uid}] Creating Railway sandbox`)
 
-  const sandbox = await Sandbox.create(scannerTemplate, {
-    // Destroy it fairly quickly if your worker crashes before cleanup.
-    idleTimeoutMinutes: 5,
+  let sandbox: Awaited<ReturnType<typeof Sandbox.create>>
 
-    // Default is already ISOLATED:
-    // public internet is available, but it cannot access your
-    // Railway project's private network.
-    networkIsolation: 'ISOLATED',
+  try {
+    sandbox = await Sandbox.create(scannerTemplate, {
+      // Destroy it fairly quickly if your worker crashes before cleanup.
+      idleTimeoutMinutes: 5,
 
-    env: {
-      JOB_UID: uid,
-      REPO_URL: repoUrl,
-    },
-  })
+      // Default is already ISOLATED:
+      // public internet is available, but it cannot access your
+      // Railway project's private network.
+      networkIsolation: 'ISOLATED',
+
+      env: {
+        JOB_UID: uid,
+        REPO_URL: repoUrl,
+      },
+    })
+  } catch (error) {
+    console.error(`[${uid}] Failed to create Railway sandbox:`, error)
+    throw error
+  }
 
   console.log(`[${uid}] Sandbox created: ${sandbox.id}`)
 

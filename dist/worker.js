@@ -164,7 +164,7 @@ export async function processRequest(pool, channel, msg, job) {
         `, [uid]);
         }
         catch (dbError) {
-            console.error(`[${uid}] Failed to reset database status:`, dbError);
+            console.error(`[${uid}] Failed to update database status:`, dbError);
         }
         channel.nack(msg, false, false);
     }
@@ -172,18 +172,25 @@ export async function processRequest(pool, channel, msg, job) {
 async function runScannerContainer(job) {
     const { uid, repoUrl } = job;
     console.log(`[${uid}] Creating Railway sandbox`);
-    const sandbox = await Sandbox.create(scannerTemplate, {
-        // Destroy it fairly quickly if your worker crashes before cleanup.
-        idleTimeoutMinutes: 5,
-        // Default is already ISOLATED:
-        // public internet is available, but it cannot access your
-        // Railway project's private network.
-        networkIsolation: 'ISOLATED',
-        env: {
-            JOB_UID: uid,
-            REPO_URL: repoUrl,
-        },
-    });
+    let sandbox;
+    try {
+        sandbox = await Sandbox.create(scannerTemplate, {
+            // Destroy it fairly quickly if your worker crashes before cleanup.
+            idleTimeoutMinutes: 5,
+            // Default is already ISOLATED:
+            // public internet is available, but it cannot access your
+            // Railway project's private network.
+            networkIsolation: 'ISOLATED',
+            env: {
+                JOB_UID: uid,
+                REPO_URL: repoUrl,
+            },
+        });
+    }
+    catch (error) {
+        console.error(`[${uid}] Failed to create Railway sandbox:`, error);
+        throw error;
+    }
     console.log(`[${uid}] Sandbox created: ${sandbox.id}`);
     try {
         const result = await sandbox.exec(`
