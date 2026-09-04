@@ -16,7 +16,7 @@ const SCAN_RULES = [
         id: 'credential-collection',
         title: 'Potential credential, token, or secret handling',
         severity: 'high',
-        pattern: /password|passwd|credential|token|api[_-]?key|secret|private[_-]?key/i,
+        pattern: /\b(?:password|passwd|credential|token|api[_-]?key|secret|private[_-]?key)s?\b/i,
     },
     {
         id: 'network-activity',
@@ -38,6 +38,15 @@ const SCAN_RULES = [
     },
 ];
 const MAX_FINDINGS = 200;
+const MAX_RG_LINES = 1000;
+const LOW_CONFIDENCE_PATH_PATTERN = /(^|\/)(?:test|tests|__tests__|fixtures?|mocks?|docs?|examples?)\/|(?:^|\/)(?:README|CHANGELOG|LICENSE)(?:\.|$)|(?:_test\.go|\.(?:test|spec)\.[jt]sx?|\.md|\.lock|min\.js)$|(?:^|\/)node_modules\//i;
+function isLowConfidencePath(file) {
+    return LOW_CONFIDENCE_PATH_PATTERN.test(file.replace(/^\.\//, ''));
+}
+function isCommentOnlySnippet(snippet) {
+    const trimmed = snippet.trim();
+    return /^(?:\/\/|#|\*|\/\*|<!--)/.test(trimmed);
+}
 export function validateRepoUrl(repoUrl) {
     const url = new URL(repoUrl);
     if (url.protocol !== 'https:') {
@@ -68,7 +77,6 @@ export const scannerTemplate = Sandbox.template()
     .run(`
     set -eux
 
-    # Dedicated non-root account for scanning
     useradd \
       --create-home \
       --uid 10001 \
@@ -78,11 +86,7 @@ export const scannerTemplate = Sandbox.template()
     mkdir -p /workspace
     chown scanner:scanner /workspace
 
-    # Defense-in-depth Git configuration
-    git config --system core.hooksPath /dev/null
-    git config --system protocol.file.allow never
-    git config --system protocol.ext.allow never
-    git config --system submodule.recurse false
+    id scanner
   `)
     .workdir('/workspace');
 export async function processRequest(pool, channel, msg, job) {
@@ -194,82 +198,109 @@ async function runScannerContainer(job) {
     console.log(`[${uid}] Sandbox created: ${sandbox.id}`);
     try {
         const result = await sandbox.exec(`
-        runuser -u scanner -- env \
-          HOME=/home/scanner \
-          JOB_UID="$JOB_UID" \
-          REPO_URL="$REPO_URL" \
-          GIT_TERMINAL_PROMPT=0 \
-          bash --noprofile --norc <<'SCAN_SCRIPT'
-            set -euo pipefail
+    runuser -u scanner -- env \
+      HOME=/home/scanner \
+      JOB_UID="$JOB_UID" \
+      REPO_URL="$REPO_URL" \
+      GIT_TERMINAL_PROMPT=0 \
+      bash --noprofile --norc <<'SCAN_SCRIPT'
+        set -euo pipefail
 
-            cd /workspace
+        cd /workspace
 
-            echo "Sandbox started"
-            echo "Job: $JOB_UID"
+        echo "Sandbox started"
+        echo "Job: $JOB_UID"
 
-            git \
-              -c core.hooksPath=/dev/null \
-              -c protocol.file.allow=never \
-              -c protocol.ext.allow=never \
-              -c filter.lfs.smudge= \
-              -c filter.lfs.process= \
-              clone \
-              --depth=1 \
-              --single-branch \
-              --no-tags \
-              --no-recurse-submodules \
-              "$REPO_URL" \
-              repo
+        git \
+          -c core.hooksPath=/dev/null \
+          -c protocol.file.allow=never \
+          -c protocol.ext.allow=never \
+          -c filter.lfs.smudge= \
+          -c filter.lfs.process= \
+          clone \
+          --depth=1 \
+          --single-branch \
+          --no-tags \
+          --no-recurse-submodules \
+          "$REPO_URL" \
+          repo
 
-            unset REPO_URL
-            cd repo
+        unset REPO_URL
+        cd repo
 
-            echo "Repository cloned"
-            echo "CODEVET_COMMIT:$(git rev-parse HEAD)"
-            echo "CODEVET_RG_BEGIN"
+        echo "Repository cloned"
+        echo "CODEVET_COMMIT:$(git rev-parse HEAD)"
+        echo "CODEVET_RG_BEGIN"
 
-            set +e
-            set +o pipefail
-            rg \
-              --json \
-              --hidden \
-              --ignore-case \
-              --line-number \
-              --column \
-              --max-filesize 1M \
-              --max-count 50 \
-              --glob '!**/.git/**' \
-              --glob '!**/node_modules/**' \
-              --glob '!**/vendor/**' \
-              --glob '!**/dist/**' \
-              --glob '!**/build/**' \
-              --glob '!**/target/**' \
-              --glob '!**/*.lock' \
-              -e 'keylog(ger|ging)?|keystroke|keypress|keydown|keyup|globalShortcut|RegisterHotKey' \
-              -e 'clipboard|navigator\.clipboard|pasteboard|xclip|pbcopy|GetClipboardData' \
-              -e 'password|passwd|credential|token|api[_-]?key|secret|private[_-]?key' \
-              -e 'https?://|fetch\(|XMLHttpRequest|WebSocket|axios\.|request\(|\bcurl\b|\bwget\b|net\.connect|socket' \
-              -e 'analytics|telemetry|fingerprint|deviceId|machineId|tracking' \
-              -e 'child_process|exec\(|spawn\(|eval\(|Function\(|powershell|osascript' \
-              . | head -n 1000
-            rg_status=\${PIPESTATUS[0]}
-            set -o pipefail
-            set -e
+        set +e
+        set +o pipefail
 
-            if [ "$rg_status" -ne 0 ] && [ "$rg_status" -ne 1 ] && [ "$rg_status" -ne 141 ]; then
-              exit "$rg_status"
-            fi
+        run_rg() {
+          rg \
+            --vimgrep \
+            --hidden \
+            --ignore-case \
+            --line-number \
+            --column \
+            --max-filesize 1M \
+            --max-columns 500 \
+            --max-count 50 \
+            --glob '!**/.git/**' \
+            --glob '!**/node_modules/**' \
+            --glob '!**/vendor/**' \
+            --glob '!**/dist/**' \
+            --glob '!**/build/**' \
+            --glob '!**/target/**' \
+            --glob '!**/coverage/**' \
+            --glob '!**/test/**' \
+            --glob '!**/tests/**' \
+            --glob '!**/__tests__/**' \
+            --glob '!**/fixtures/**' \
+            --glob '!**/mocks/**' \
+            --glob '!**/docs/**' \
+            --glob '!**/examples/**' \
+            --glob '!**/*_test.go' \
+            --glob '!**/*.test.*' \
+            --glob '!**/*.spec.*' \
+            --glob '!**/*.md' \
+            --glob '!**/*.lock' \
+            --glob '!**/*.min.js' \
+            "$@" \
+            . | head -n ${MAX_RG_LINES}
 
-            echo "CODEVET_RG_END"
+          rg_status=\${PIPESTATUS[0]}
+
+          if [ "$rg_status" -ne 0 ] && \
+             [ "$rg_status" -ne 1 ] && \
+             [ "$rg_status" -ne 141 ]; then
+            exit "$rg_status"
+          fi
+        }
+
+        # Emit high-severity rules first so medium-severity noise can never
+        # consume the parser/storage cap before high findings are seen.
+        run_rg \
+          -e 'keylog(ger|ging)?|keystroke|keypress|keydown|keyup|globalShortcut|RegisterHotKey' \
+          -e '\\b(password|passwd|credential|token|api[_-]?key|secret|private[_-]?key)s?\\b'
+
+        run_rg \
+          -e 'clipboard|navigator\\.clipboard|pasteboard|xclip|pbcopy|GetClipboardData' \
+          -e 'https?://|fetch\\(|XMLHttpRequest|WebSocket|axios\\.|request\\(|\\bcurl\\b|\\bwget\\b|net\\.connect|socket' \
+          -e 'analytics|telemetry|fingerprint|deviceId|machineId|tracking' \
+          -e 'child_process|exec\\(|spawn\\(|eval\\(|Function\\(|powershell|osascript'
+
+        set -o pipefail
+        set -e
+
+        echo "CODEVET_RG_END"
 SCAN_SCRIPT
-      `, {
+  `, {
             timeoutSec: 120,
         });
-        console.log(`[${uid}] Sandbox stdout:`);
-        console.log(result.stdout);
+        console.log(`[${uid}] Sandbox completed: ${result.stdout.length} bytes of output`);
         if (result.stderr) {
-            console.error(`[${uid}] Sandbox stderr:`);
-            console.error(result.stderr);
+            const stderr = result.stderr.trim();
+            console.error(`[${uid}] Sandbox stderr (${stderr.length} bytes): ${stderr.slice(0, 2000)}`);
         }
         if (result.exitCode !== 0) {
             throw new Error(`Sandbox command exited with code ${result.exitCode}`);
@@ -287,6 +318,35 @@ SCAN_SCRIPT
         }
     }
 }
+function addFinding(findings, raw) {
+    if (findings.length >= MAX_FINDINGS) {
+        return;
+    }
+    if (isLowConfidencePath(raw.file) || isCommentOnlySnippet(raw.snippet)) {
+        return;
+    }
+    const rule = SCAN_RULES.find((candidate) => candidate.pattern.test(raw.snippet));
+    if (!rule) {
+        return;
+    }
+    const matchedText = raw.match || raw.snippet.match(rule.pattern)?.[0] || '';
+    if (findings.some((finding) => finding.ruleId === rule.id &&
+        finding.file === raw.file &&
+        finding.line === raw.line &&
+        finding.snippet === raw.snippet.slice(0, 500))) {
+        return;
+    }
+    findings.push({
+        ruleId: rule.id,
+        title: rule.title,
+        severity: rule.severity,
+        file: raw.file,
+        line: raw.line,
+        column: raw.column,
+        snippet: raw.snippet.slice(0, 500),
+        match: matchedText.slice(0, 200),
+    });
+}
 function parseScannerOutput(stdout) {
     const commitMatch = stdout.match(/^CODEVET_COMMIT:([0-9a-f]{40})$/m);
     const findings = [];
@@ -300,32 +360,37 @@ function parseScannerOutput(stdout) {
             inRgOutput = false;
             continue;
         }
-        if (!inRgOutput || findings.length >= MAX_FINDINGS) {
+        if (!inRgOutput || findings.length >= MAX_FINDINGS || !line) {
             continue;
         }
         try {
-            const event = JSON.parse(line);
-            if (event.type !== 'match') {
+            if (line.startsWith('{')) {
+                const event = JSON.parse(line);
+                if (event.type !== 'match') {
+                    continue;
+                }
+                addFinding(findings, {
+                    file: String(event.data?.path?.text ?? ''),
+                    line: Number(event.data?.line_number ?? 0),
+                    column: Number(event.data?.submatches?.[0]?.start ?? 0) + 1,
+                    snippet: String(event.data?.lines?.text ?? '').trim(),
+                    match: String(event.data?.submatches?.[0]?.match?.text ?? ''),
+                });
                 continue;
             }
-            const snippet = String(event.data?.lines?.text ?? '').trim();
-            const rule = SCAN_RULES.find((candidate) => candidate.pattern.test(snippet));
-            if (!rule) {
-                continue;
+            const vimgrepMatch = line.match(/^(.+?):(\d+):(\d+):(.*)$/);
+            if (vimgrepMatch) {
+                addFinding(findings, {
+                    file: vimgrepMatch[1],
+                    line: Number(vimgrepMatch[2]),
+                    column: Number(vimgrepMatch[3]),
+                    snippet: vimgrepMatch[4].trim(),
+                    match: '',
+                });
             }
-            findings.push({
-                ruleId: rule.id,
-                title: rule.title,
-                severity: rule.severity,
-                file: String(event.data?.path?.text ?? ''),
-                line: Number(event.data?.line_number ?? 0),
-                column: Number(event.data?.submatches?.[0]?.start ?? 0) + 1,
-                snippet: snippet.slice(0, 500),
-                match: String(event.data?.submatches?.[0]?.match?.text ?? '').slice(0, 200),
-            });
         }
         catch {
-            // Ignore non-JSON progress/log lines emitted by the sandbox command.
+            // Ignore malformed scanner output lines.
         }
     }
     return {
