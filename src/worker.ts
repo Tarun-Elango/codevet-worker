@@ -293,80 +293,85 @@ async function runScannerContainer(
 
   try {
     const result = await sandbox.exec(
-      `
-        runuser -u scanner -- env \
-          HOME=/home/scanner \
-          JOB_UID="$JOB_UID" \
-          REPO_URL="$REPO_URL" \
-          GIT_TERMINAL_PROMPT=0 \
-          bash --noprofile --norc <<'SCAN_SCRIPT'
-            set -euo pipefail
+  `
+    runuser -u scanner -- env \
+      HOME=/home/scanner \
+      JOB_UID="$JOB_UID" \
+      REPO_URL="$REPO_URL" \
+      GIT_TERMINAL_PROMPT=0 \
+      bash --noprofile --norc <<'SCAN_SCRIPT'
+        set -euo pipefail
 
-            cd /workspace
+        cd /workspace
 
-            echo "Sandbox started"
-            echo "Job: $JOB_UID"
+        echo "Sandbox started"
+        echo "Job: $JOB_UID"
 
-            git \
-              -c core.hooksPath=/dev/null \
-              -c protocol.file.allow=never \
-              -c protocol.ext.allow=never \
-              -c filter.lfs.smudge= \
-              -c filter.lfs.process= \
-              clone \
-              --depth=1 \
-              --single-branch \
-              --no-tags \
-              --no-recurse-submodules \
-              "$REPO_URL" \
-              repo
+        git \
+          -c core.hooksPath=/dev/null \
+          -c protocol.file.allow=never \
+          -c protocol.ext.allow=never \
+          -c filter.lfs.smudge= \
+          -c filter.lfs.process= \
+          clone \
+          --depth=1 \
+          --single-branch \
+          --no-tags \
+          --no-recurse-submodules \
+          "$REPO_URL" \
+          repo
 
-            unset REPO_URL
-            cd repo
+        unset REPO_URL
+        cd repo
 
-            echo "Repository cloned"
-            echo "CODEVET_COMMIT:$(git rev-parse HEAD)"
-            echo "CODEVET_RG_BEGIN"
+        echo "Repository cloned"
+        echo "CODEVET_COMMIT:$(git rev-parse HEAD)"
+        echo "CODEVET_RG_BEGIN"
 
-            set +e
-            set +o pipefail
-            rg \
-              --json \
-              --hidden \
-              --ignore-case \
-              --line-number \
-              --column \
-              --max-filesize 1M \
-              --max-count 50 \
-              --glob '!**/.git/**' \
-              --glob '!**/node_modules/**' \
-              --glob '!**/vendor/**' \
-              --glob '!**/dist/**' \
-              --glob '!**/build/**' \
-              --glob '!**/target/**' \
-              --glob '!**/*.lock' \
-              -e 'keylog(ger|ging)?|keystroke|keypress|keydown|keyup|globalShortcut|RegisterHotKey' \
-              -e 'clipboard|navigator\.clipboard|pasteboard|xclip|pbcopy|GetClipboardData' \
-              -e 'password|passwd|credential|token|api[_-]?key|secret|private[_-]?key' \
-              -e 'https?://|fetch\(|XMLHttpRequest|WebSocket|axios\.|request\(|\bcurl\b|\bwget\b|net\.connect|socket' \
-              -e 'analytics|telemetry|fingerprint|deviceId|machineId|tracking' \
-              -e 'child_process|exec\(|spawn\(|eval\(|Function\(|powershell|osascript' \
-              . | head -n 1000
-            rg_status=\${PIPESTATUS[0]}
-            set -o pipefail
-            set -e
+        set +e
+        set +o pipefail
 
-            if [ "$rg_status" -ne 0 ] && [ "$rg_status" -ne 1 ] && [ "$rg_status" -ne 141 ]; then
-              exit "$rg_status"
-            fi
+        rg \
+          --json \
+          --hidden \
+          --ignore-case \
+          --line-number \
+          --column \
+          --max-filesize 1M \
+          --max-count 50 \
+          --glob '!**/.git/**' \
+          --glob '!**/node_modules/**' \
+          --glob '!**/vendor/**' \
+          --glob '!**/dist/**' \
+          --glob '!**/build/**' \
+          --glob '!**/target/**' \
+          --glob '!**/*.lock' \
+          -e 'keylog(ger|ging)?|keystroke|keypress|keydown|keyup|globalShortcut|RegisterHotKey' \
+          -e 'clipboard|navigator\\.clipboard|pasteboard|xclip|pbcopy|GetClipboardData' \
+          -e 'password|passwd|credential|token|api[_-]?key|secret|private[_-]?key' \
+          -e 'https?://|fetch\\(|XMLHttpRequest|WebSocket|axios\\.|request\\(|\\bcurl\\b|\\bwget\\b|net\\.connect|socket' \
+          -e 'analytics|telemetry|fingerprint|deviceId|machineId|tracking' \
+          -e 'child_process|exec\\(|spawn\\(|eval\\(|Function\\(|powershell|osascript' \
+          . | head -n 1000
 
-            echo "CODEVET_RG_END"
+        rg_status=\${PIPESTATUS[0]}
+
+        set -o pipefail
+        set -e
+
+        if [ "$rg_status" -ne 0 ] && \
+           [ "$rg_status" -ne 1 ] && \
+           [ "$rg_status" -ne 141 ]; then
+          exit "$rg_status"
+        fi
+
+        echo "CODEVET_RG_END"
 SCAN_SCRIPT
-      `,
-      {
-        timeoutSec: 120,
-      }
-    )
+  `,
+  {
+    timeoutSec: 120,
+  }
+)
 
     console.log(`[${uid}] Sandbox stdout:`)
     console.log(result.stdout)
