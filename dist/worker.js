@@ -98,13 +98,13 @@ export async function processRequest(pool, channel, msg, job) {
         catch (dbError) {
             console.error(`[${uid}] Failed to reset database status:`, dbError);
         }
-        channel.nack(msg, false, true);
+        channel.nack(msg, false, false);
     }
 }
 async function runScannerContainer(job) {
     const { uid, repoUrl } = job;
     console.log(`[${uid}] Creating Railway sandbox`);
-    const sandbox = await Sandbox.create({
+    const sandbox = await Sandbox.create(scannerTemplate, {
         // Destroy it fairly quickly if your worker crashes before cleanup.
         idleTimeoutMinutes: 5,
         // Default is already ISOLATED:
@@ -118,31 +118,40 @@ async function runScannerContainer(job) {
     });
     console.log(`[${uid}] Sandbox created: ${sandbox.id}`);
     try {
-        const result = await sandbox.exec(`bash -lc '
-      echo "Sandbox started"
-      echo "Job: $JOB_UID"
-      echo "Repo: $REPO_URL"
+        const result = await sandbox.exec(`
+        runuser -u scanner -- env \
+          HOME=/home/scanner \
+          JOB_UID="$JOB_UID" \
+          REPO_URL="$REPO_URL" \
+          GIT_TERMINAL_PROMPT=0 \
+          bash --noprofile --norc -c '
+            set -euo pipefail
 
-      echo "Doing fake scanner work..."
+            cd /workspace
 
-      mkdir -p /tmp/work
-      echo "hello from isolated scanner" > /tmp/work/test.txt
+            echo "Sandbox started"
+            echo "Job: $JOB_UID"
 
-      echo "Files:"
-      ls -la /tmp/work
+            git \
+              -c core.hooksPath=/dev/null \
+              -c protocol.file.allow=never \
+              -c protocol.ext.allow=never \
+              clone \
+              --depth=1 \
+              --single-branch \
+              --no-tags \
+              "$REPO_URL" \
+              repo
 
-      echo "Contents:"
-      cat /tmp/work/test.txt
+            unset REPO_URL
+            cd repo
 
-      echo "System:"
-      uname -a
+            echo "Repository cloned"
 
-      echo "Memory:"
-      cat /proc/meminfo | head
-
-      echo "Fake scan finished"
-    '`, {
-            timeoutSec: 30,
+            rg --files | head -100
+          '
+      `, {
+            timeoutSec: 60,
         });
         console.log(`[${uid}] Sandbox stdout:`);
         console.log(result.stdout);
