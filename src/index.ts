@@ -6,7 +6,11 @@ import amqp from 'amqplib'
 import type { Channel, ChannelModel, ConsumeMessage } from 'amqplib'
 import pg from 'pg'
 import 'dotenv/config'
-import { processRequest, type ScanJob } from './worker.js'
+import {
+  processRequest,
+  validateRepoUrl,
+  type ScanJob,
+} from './worker.js'
 const { Pool } = pg
 
 const QUEUE_NAME = 'scan_requests'
@@ -83,9 +87,24 @@ function parseJob(msg: ConsumeMessage): ScanJob | null {
       return null
     }
 
+    const commitSha = body.commitSha ?? body.commit_sha
+
+    // commitSha is optional for backwards compatibility with messages that
+    // were published before commit-aware de-duplication was added.
+    if (
+      commitSha !== undefined &&
+      (typeof commitSha !== 'string' ||
+        !/^[0-9a-f]{40}$/i.test(commitSha))
+    ) {
+      return null
+    }
+
     return {
       uid: body.uid,
       repoUrl: body.repoUrl,
+      ...(commitSha
+        ? { commitSha: commitSha.toLowerCase() }
+        : {}),
     }
   } catch {
     return null
@@ -107,7 +126,63 @@ async function processJob(
 
     return
   }
-  await processRequest(pool, channel, msg, job)   
+  // repo_results stores canonical URLs, so normalize the URL before looking
+  // up a cached result. Invalid URLs are left to processRequest, which marks
+  // the request as invalid and acknowledges the message.
+  let normalizedRepoUrl: string | null = null
+  try {
+    normalizedRepoUrl = validateRepoUrl(job.repoUrl).toString()
+  } catch {
+    // processRequest performs the normal invalid-URL handling.
+  }
+
+  if (normalizedRepoUrl && job.commitSha) {
+    try {
+      const cachedResult = await pool.query(
+        `
+          SELECT 1
+          FROM repo_results
+          WHERE repo_url = $1
+            AND commit_sha = $2
+          LIMIT 1
+        `,
+        [normalizedRepoUrl, job.commitSha]
+      )
+
+      if (cachedResult.rowCount && cachedResult.rowCount > 0) {
+        console.log(
+          `[${job.uid}] Skipping already-scanned ${normalizedRepoUrl}@${job.commitSha}`
+        )
+        channel.ack(msg)
+        return
+      }
+    } catch (error) {
+      console.error(`[${job.uid}] Failed to check scan cache:`, error)
+
+      try {
+        await pool.query(
+          `
+            UPDATE requests
+            SET status = 'failed'
+            WHERE uid = $1
+          `,
+          [job.uid]
+        )
+      } catch (dbError) {
+        console.error(
+          `[${job.uid}] Failed to update request status:`,
+          dbError
+        )
+      }
+
+      // Do not requeue: the cache check failed and this message cannot be
+      // safely processed without risking a duplicate scan.
+      channel.nack(msg, false, false)
+      return
+    }
+  }
+
+  await processRequest(pool, channel, msg, job)
 }
 
 async function startWorker() {

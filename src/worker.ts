@@ -5,6 +5,9 @@ import { Sandbox } from 'railway'
 export type ScanJob = {
   uid: string
   repoUrl: string
+  // When supplied by the producer, this lets the worker avoid scanning a
+  // commit that has already been scanned.
+  commitSha?: string
 }
 
 type ScannerFinding = {
@@ -73,9 +76,16 @@ const SCAN_RULES: ScanRule[] = [
     pattern:
       /child_process|exec\(|spawn\(|eval\(|Function\(|powershell|osascript/i,
   },
+  {
+    id: 'sensitive-system-access',
+    title: 'Potential sensitive device, system, or data access',
+    severity: 'high',
+    pattern:
+      /getUserMedia|mediaDevices|MediaRecorder|microphone|micPermission|AVAudioRecorder|AVAudioEngine|AVCapture(?:Device|Session)|AudioRecord|RECORD_AUDIO|pyaudio|sounddevice|getDisplayMedia|camera|CAMERA|screenCapture|desktopCapturer|mouse(?:move|down|up|click)?|screencapture|clipboard|pasteboard|GetClipboardData|cookies?|browser[_ -]?(?:history|profile|profiles)|saved[_ -]?passwords?|home(?:dir|directory)?|Documents|\.env\b|config(?:uration)?[_ -]?files?|\.ssh|ssh[_ -]?keys?|private[_ -]?keys?|certificates?|keychains?|hostname|username|mac[_ -]?address|hardware[_ -]?id|device[_ -]?id|gps|geo(?:location)?|ip[_ -]?based[_ -]?location|process(?:es)?|running[_ -]?(?:processes|applications)|exec\(|spawn\(|PowerShell|osascript|startup[_ -]?items?|launch[_ -]?agents?|registry[_ -]?Run|cron|systemd|sudo|administrator[_ -]?elevation|setuid|UAC|https?:\/\/|fetch\(|XMLHttpRequest|WebSocket|raw[_ -]?sockets?|uploads?|exfiltrat(?:e|ion)|analytics|telemetry|fingerprint(?:ing)?|usage[_ -]?collection|eval\(|dynamically[_ -]?downloaded|Function\(|FFI|Win32|syscalls?|\/proc|\/dev/i,
+  },
 ]
 
-const MAX_FINDINGS = 200
+const MAX_FINDINGS = 1000
 const MAX_RG_LINES = 1000
 
 const LOW_CONFIDENCE_PATH_PATTERN =
@@ -390,7 +400,10 @@ async function runScannerContainer(
         # consume the parser/storage cap before high findings are seen.
         run_rg \
           -e 'keylog(ger|ging)?|keystroke|keypress|keydown|keyup|globalShortcut|RegisterHotKey' \
-          -e '\\b(password|passwd|credential|token|api[_-]?key|secret|private[_-]?key)s?\\b'
+          -e '\\b(password|passwd|credential|token|api[_-]?key|secret|private[_-]?key)s?\\b' \
+          -e 'getUserMedia|mediaDevices|MediaRecorder|microphone|micPermission|AVAudioRecorder|AVAudioEngine|AVCaptureDevice|AudioRecord|MediaRecorder|RECORD_AUDIO|pyaudio|sounddevice' \
+          -e 'getDisplayMedia|getUserMedia|camera|AVCaptureSession|AVCaptureDevice|CAMERA|screenCapture|desktopCapturer' \
+          -e 'mouse(move|down|up|click)?|screencapture|clipboard|pasteboard|GetClipboardData|cookies?|browser[_ -]?(history|profile|profiles)|saved[_ -]?passwords?|home(dir|directory)?|Documents|\\.env\\b|config(uration)?[_ -]?files?|\\.ssh|ssh[_ -]?keys?|private[_ -]?keys?|certificates?|keychains?|hostname|username|mac[_ -]?address|hardware[_ -]?id|device[_ -]?id|gps|geo(location)?|ip[_ -]?based[_ -]?location|process(es)?|running[_ -]?(processes|applications)|PowerShell|startup[_ -]?items?|launch[_ -]?agents?|registry[_ -]?Run|cron|systemd|sudo|administrator[_ -]?elevation|setuid|UAC|raw[_ -]?sockets?|uploads?|exfiltrat(e|ion)|usage[_ -]?collection|dynamically[_ -]?downloaded|FFI|Win32|syscalls?|/proc|/dev'
 
         run_rg \
           -e 'clipboard|navigator\\.clipboard|pasteboard|xclip|pbcopy|GetClipboardData' \
