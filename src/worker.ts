@@ -8,6 +8,68 @@ export type ScanJob = {
   repoUrl: string
 }
 
+export function validateRepoUrl(repoUrl: string): URL {
+  const url = new URL(repoUrl)
+
+  if (url.protocol !== 'https:') {
+    throw new Error('Only HTTPS repositories are allowed')
+  }
+
+  if (url.hostname !== 'github.com') {
+    throw new Error('Only github.com repositories are allowed')
+  }
+
+  const parts = url.pathname
+    .replace(/\\.git$/, '')
+    .split('/')
+    .filter(Boolean)
+
+  if (parts.length !== 2) {
+    throw new Error('Invalid GitHub repository URL')
+  }
+
+  const [owner, repo] = parts
+
+  const validPart = /^[A-Za-z0-9_.-]+$/
+
+  if (!validPart.test(owner) || !validPart.test(repo)) {
+    throw new Error('Invalid GitHub repository URL')
+  }
+
+  return new URL(
+    `https://github.com/${owner}/${repo}.git`
+  )
+}
+
+export const scannerTemplate = Sandbox.template()
+  .withPackages(
+    'git',
+    'ripgrep',
+    'ca-certificates',
+    'util-linux',
+    'passwd'
+  )
+  .run(`
+    set -eux
+
+    # Dedicated non-root account for scanning
+    useradd \
+      --create-home \
+      --uid 10001 \
+      --shell /bin/bash \
+      scanner
+
+    mkdir -p /workspace
+    chown scanner:scanner /workspace
+
+    # Defense-in-depth Git configuration
+    git config --system core.hooksPath /dev/null
+    git config --system protocol.file.allow never
+    git config --system protocol.ext.allow never
+    git config --system submodule.recurse false
+  `)
+  .workdir('/workspace')
+
 export async function processRequest(
   pool: Pool,
   channel: Channel,
@@ -36,7 +98,30 @@ export async function processRequest(
       return
     }
 
-    await runScannerContainer(job)
+    let validatedRepoUrl: URL
+
+    try {
+      validatedRepoUrl = validateRepoUrl(repoUrl)
+    } catch (error) {
+      console.error(`[${uid}] Invalid repository URL:`, error)
+
+      await pool.query(
+        `
+          UPDATE requests
+          SET status = 'invalid'
+          WHERE uid = $1
+        `,
+        [uid]
+      )
+
+      channel.ack(msg)
+      return
+    }
+
+    await runScannerContainer({
+      ...job,
+      repoUrl: validatedRepoUrl.toString(),
+    })
 
     console.log(`[${uid}] Work performed`)
 
