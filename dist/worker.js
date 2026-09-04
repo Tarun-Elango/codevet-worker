@@ -62,7 +62,7 @@ export function validateRepoUrl(repoUrl) {
         throw new Error('Only github.com repositories are allowed');
     }
     const parts = url.pathname
-        .replace(/\\.git$/, '')
+        .replace(/\.git$/, '')
         .split('/')
         .filter(Boolean);
     if (parts.length !== 2) {

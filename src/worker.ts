@@ -112,7 +112,7 @@ export function validateRepoUrl(repoUrl: string): URL {
   }
 
   const parts = url.pathname
-    .replace(/\\.git$/, '')
+    .replace(/\.git$/, '')
     .split('/')
     .filter(Boolean)
 
