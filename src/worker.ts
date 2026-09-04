@@ -99,35 +99,34 @@ async function runScannerContainer(job: ScanJob): Promise<void> {
 
   try {
     const result = await sandbox.exec(
-      `bash -lc '
-        echo "Sandbox started"
-        echo "Job: $JOB_UID"
-        echo "Repo: $REPO_URL"
+    `bash -lc '
+      echo "Sandbox started"
+      echo "Job: $JOB_UID"
+      echo "Repo: $REPO_URL"
 
-        echo "Doing fake scanner work..."
+      echo "Doing fake scanner work..."
 
-        mkdir -p /tmp/work
+      mkdir -p /tmp/work
+      echo "hello from isolated scanner" > /tmp/work/test.txt
 
-        echo "hello from isolated scanner" > /tmp/work/test.txt
+      echo "Files:"
+      ls -la /tmp/work
 
-        echo "Files:"
-        ls -la /tmp/work
+      echo "Contents:"
+      cat /tmp/work/test.txt
 
-        echo "Contents:"
-        cat /tmp/work/test.txt
+      echo "System:"
+      uname -a
 
-        echo "System:"
-        uname -a
+      echo "Memory:"
+      cat /proc/meminfo | head
 
-        echo "Memory:"
-        free -h || true
-
-        echo "Fake scan finished"
-      '`,
-      {
-        timeoutSec: 30,
-      }
-    )
+      echo "Fake scan finished"
+    '`,
+    {
+      timeoutSec: 30,
+    }
+  )
 
     console.log(`[${uid}] Sandbox stdout:`)
     console.log(result.stdout)
