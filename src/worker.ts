@@ -6,6 +6,29 @@ export type ScanJob = {
   repoUrl: string
 }
 
+
+async function scanCheck(job: ScanJob) {
+  /*
+   * Placeholder for sandboxed scanner.
+   *
+   * Eventually:
+   *
+   * const container = await createSandboxContainer(job.uid)
+   *
+   * try {
+   *   await container.start()
+   *
+   *   await runScan(container, job.repoUrl)
+   *
+   *   await saveResults(job.uid)
+   * } finally {
+   *   await container.remove({ force: true })
+   * }
+   */
+
+  console.log(`[${job.uid}] Running scan for ${job.repoUrl}`)
+}
+
 export async function processRequest(
   pool: Pool,
   channel: Channel,
@@ -38,6 +61,7 @@ export async function processRequest(
      * Actual scanner logic goes here.
      */
 
+    await scanCheck(job)
     console.log(`[${uid}] Work performed`)
 
     await pool.query(
