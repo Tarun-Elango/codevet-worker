@@ -125,15 +125,18 @@ export const scannerTemplate = Sandbox.template()
   .run(`
     set -eux
 
-    command -v git
-    command -v rg
-    command -v useradd
-    command -v runuser
+    useradd \
+      --create-home \
+      --uid 10001 \
+      --shell /bin/bash \
+      scanner
 
     mkdir -p /workspace
+    chown scanner:scanner /workspace
+
+    id scanner
   `)
   .workdir('/workspace')
-
 export async function processRequest(
   pool: Pool,
   channel: Channel,
