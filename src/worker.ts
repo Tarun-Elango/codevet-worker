@@ -87,6 +87,7 @@ const SCAN_RULES: ScanRule[] = [
 
 const MAX_FINDINGS = 1000
 const MAX_RG_LINES = 1000
+const SCANNER_VERSION = 'v1'
 
 const LOW_CONFIDENCE_PATH_PATTERN =
   /(^|\/)(?:test|tests|__tests__|fixtures?|mocks?|docs?|examples?)\/|(?:^|\/)(?:README|CHANGELOG|LICENSE)(?:\.|$)|(?:_test\.go|\.(?:test|spec)\.[jt]sx?|\.md|\.lock|min\.js)$|(?:^|\/)node_modules\//i
@@ -276,9 +277,10 @@ export async function processRequest(
         FROM repo_results
         WHERE lower(repo_identifier) = lower($1)
           AND commit_sha = $2
+          AND scanner_version = $3
         LIMIT 1
       `,
-      [repoIdentifier, commitSha]
+      [repoIdentifier, commitSha, SCANNER_VERSION]
     )
 
     if (cachedResult.rowCount && cachedResult.rowCount > 0) {
@@ -318,8 +320,8 @@ export async function processRequest(
           overall_risk,
           scanned_at
         )
-        VALUES ($1, $2, $3, $4, $5, $6::jsonb, 'v1', NULL, NOW())
-        ON CONFLICT (repo_identifier, commit_sha)
+        VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, NULL, NOW())
+        ON CONFLICT (repo_identifier, commit_sha, scanner_version)
         DO UPDATE SET
           repo_url = EXCLUDED.repo_url,
           commit_sha = EXCLUDED.commit_sha,
@@ -336,6 +338,7 @@ export async function processRequest(
         commitSha,
         '',
         JSON.stringify(scannerResult.findings),
+        SCANNER_VERSION,
       ]
     )
 
