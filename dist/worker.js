@@ -78,6 +78,7 @@ export function validateRepoUrl(repoUrl) {
 function repoIdentifierFromUrl(repoUrl) {
     return repoUrl.pathname.replace(/^\//, '').replace(/\.git$/, '');
 }
+//find default branch's commit sha
 async function resolveDefaultBranchCommit(repoUrl) {
     const [owner, repo] = repoIdentifierFromUrl(repoUrl).split('/');
     const apiUrl = new URL(`https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/commits`);
@@ -195,21 +196,25 @@ export async function processRequest(pool, channel, msg, job) {
           commit_sha,
           summary,
           findings,
+          scanner_version,
+          overall_risk,
           scanned_at
         )
-        VALUES ($1, $2, $3, $4, $5, $6::jsonb, NOW())
-        ON CONFLICT (uid, repo_identifier)
+        VALUES ($1, $2, $3, $4, $5, $6::jsonb, 'v1', NULL, NOW())
+        ON CONFLICT (repo_identifier, commit_sha)
         DO UPDATE SET
           repo_url = EXCLUDED.repo_url,
           commit_sha = EXCLUDED.commit_sha,
           summary = EXCLUDED.summary,
           findings = EXCLUDED.findings,
+          scanner_version = EXCLUDED.scanner_version,
+          overall_risk = EXCLUDED.overall_risk,
           scanned_at = NOW()
       `, [
             uid,
             repoIdentifier,
             validatedRepoUrl.toString(),
-            scannerResult.commitSha,
+            commitSha,
             '',
             JSON.stringify(scannerResult.findings),
         ]);

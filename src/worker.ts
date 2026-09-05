@@ -264,11 +264,11 @@ export async function processRequest(
     // this lock, two deliveries can both miss the cache and create sandboxes
     // before either one stores its result.
     lockClient = await pool.connect()
-    lockKey = repoIdentifier.toLowerCase() // create lock id
+    lockKey = repoIdentifier.toLowerCase()
     await lockClient.query(
       'SELECT pg_advisory_lock(hashtextextended($1, 0))',
       [lockKey]
-    ) // hash lockey, get advisory lock, wait until a process with it releases it 
+    )
 
     const cachedResult = await lockClient.query(
       `
@@ -279,7 +279,7 @@ export async function processRequest(
         LIMIT 1
       `,
       [repoIdentifier, commitSha]
-    ) // check if result already exists 
+    )
 
     if (cachedResult.rowCount && cachedResult.rowCount > 0) {
       console.log(
@@ -314,22 +314,26 @@ export async function processRequest(
           commit_sha,
           summary,
           findings,
+          scanner_version,
+          overall_risk,
           scanned_at
         )
-        VALUES ($1, $2, $3, $4, $5, $6::jsonb, NOW())
-        ON CONFLICT (uid, repo_identifier)
+        VALUES ($1, $2, $3, $4, $5, $6::jsonb, 'v1', NULL, NOW())
+        ON CONFLICT (repo_identifier, commit_sha)
         DO UPDATE SET
           repo_url = EXCLUDED.repo_url,
           commit_sha = EXCLUDED.commit_sha,
           summary = EXCLUDED.summary,
           findings = EXCLUDED.findings,
+          scanner_version = EXCLUDED.scanner_version,
+          overall_risk = EXCLUDED.overall_risk,
           scanned_at = NOW()
       `,
       [
         uid,
         repoIdentifier,
         validatedRepoUrl.toString(),
-        scannerResult.commitSha,
+        commitSha,
         '',
         JSON.stringify(scannerResult.findings),
       ]

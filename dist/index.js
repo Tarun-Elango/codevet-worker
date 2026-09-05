@@ -168,9 +168,12 @@ CREATE TABLE repo_results (
     summary TEXT,
     findings JSONB,
 
+    scanner_version TEXT NOT NULL DEFAULT 'v1',
+    overall_risk VARCHAR(32),
+
     scanned_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 
-    UNIQUE (uid, repo_identifier)
+    UNIQUE (repo_identifier, commit_sha)
 );
  
 CREATE TABLE requests (
