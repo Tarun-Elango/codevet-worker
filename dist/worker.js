@@ -54,36 +54,51 @@ function isCommentOnlySnippet(snippet) {
     const trimmed = snippet.trim();
     return /^(?:\/\/|#|\*|\/\*|<!--)/.test(trimmed);
 }
-export function validateRepoUrl(repoUrl) {
+function parseRepoUrl(repoUrl) {
     const url = new URL(repoUrl);
-    if (url.protocol !== 'https:') {
-        throw new Error('Only HTTPS repositories are allowed');
+    if (url.protocol !== 'https:' || url.hostname !== 'github.com') {
+        throw new Error('Only HTTPS github.com repositories are allowed');
     }
-    if (url.hostname !== 'github.com') {
-        throw new Error('Only github.com repositories are allowed');
-    }
-    const parts = url.pathname
-        .replace(/\.git$/, '')
-        .split('/')
-        .filter(Boolean);
-    if (parts.length !== 2) {
-        throw new Error('Invalid GitHub repository URL');
-    }
-    const [owner, repo] = parts;
+    const parts = url.pathname.replace(/\.git$/, '').split('/').filter(Boolean);
+    const [owner, repo, view, ...refParts] = parts;
     const validPart = /^[A-Za-z0-9_.-]+$/;
-    if (!validPart.test(owner) || !validPart.test(repo)) {
+    if (!owner || !repo || !validPart.test(owner) || !validPart.test(repo)) {
         throw new Error('Invalid GitHub repository URL');
     }
-    return new URL(`https://github.com/${owner}/${repo}.git`);
+    let ref;
+    if (parts.length > 2) {
+        if (view !== 'tree' || refParts.length === 0) {
+            throw new Error('Use a repository URL or a GitHub /tree/BRANCH URL');
+        }
+        ref = refParts.map(decodeURIComponent).join('/');
+        if (!ref || /[\x00-\x20~^:?*\\[\\]|]|\.\.|\/$|\.$/.test(ref)) {
+            throw new Error('Invalid Git branch name');
+        }
+    }
+    return {
+        cloneUrl: new URL(`https://github.com/${owner}/${repo}.git`),
+        ref,
+    };
+}
+// Kept exported for callers that only need the safe clone URL.
+export function validateRepoUrl(repoUrl) {
+    return parseRepoUrl(repoUrl).cloneUrl;
 }
 function repoIdentifierFromUrl(repoUrl) {
     return repoUrl.pathname.replace(/^\//, '').replace(/\.git$/, '');
 }
-//find default branch's commit sha
-async function resolveDefaultBranchCommit(repoUrl) {
+// Resolve either GitHub's default branch or a ref selected in a /tree/ URL.
+async function resolveBranchCommit(repoUrl, ref) {
     const [owner, repo] = repoIdentifierFromUrl(repoUrl).split('/');
     const apiUrl = new URL(`https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/commits`);
-    apiUrl.searchParams.set('per_page', '1');
+    if (ref) {
+        // Encode slashes too: the complete value is one Git ref, not URL path
+        // components supplied by the requester.
+        apiUrl.pathname += `/${encodeURIComponent(ref)}`;
+    }
+    else {
+        apiUrl.searchParams.set('per_page', '1');
+    }
     const headers = {
         Accept: 'application/vnd.github+json',
         'User-Agent': 'codevet-scanner-worker',
@@ -99,8 +114,8 @@ async function resolveDefaultBranchCommit(repoUrl) {
     if (!response.ok) {
         throw new Error(`GitHub returned ${response.status} while resolving the default branch commit`);
     }
-    const commits = (await response.json());
-    const commitSha = commits[0]?.sha;
+    const body = (await response.json());
+    const commitSha = Array.isArray(body) ? body[0]?.sha : body.sha;
     if (typeof commitSha !== 'string' ||
         !/^[0-9a-f]{40}$/i.test(commitSha)) {
         throw new Error('GitHub did not return a valid commit SHA');
@@ -141,9 +156,9 @@ export async function processRequest(pool, channel, msg, job) {
             channel.ack(msg);
             return;
         }
-        let validatedRepoUrl;
+        let validatedRepository;
         try {
-            validatedRepoUrl = validateRepoUrl(repoUrl);
+            validatedRepository = parseRepoUrl(repoUrl);
         }
         catch (error) {
             console.error(`[${uid}] Invalid repository URL:`, error);
@@ -155,12 +170,12 @@ export async function processRequest(pool, channel, msg, job) {
             channel.ack(msg);
             return;
         }
+        const validatedRepoUrl = validatedRepository.cloneUrl;
         const repoIdentifier = repoIdentifierFromUrl(validatedRepoUrl);
-        // Jobs created from a URL-only request do not contain a SHA. Resolve the
-        // default branch before creating a sandbox so those jobs can use the same
-        // cache as commit-aware producers.
+        // A plain repository URL means the default branch; /tree/REF means that
+        // exact branch/ref. In both cases cache by immutable commit SHA.
         const commitSha = job.commitSha ??
-            (await resolveDefaultBranchCommit(validatedRepoUrl));
+            (await resolveBranchCommit(validatedRepoUrl, validatedRepository.ref));
         // Serialize scans for a repository across all worker instances. Without
         // this lock, two deliveries can both miss the cache and create sandboxes
         // before either one stores its result.

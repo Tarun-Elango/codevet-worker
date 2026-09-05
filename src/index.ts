@@ -244,6 +244,16 @@ CREATE TABLE repo_results (
 
     UNIQUE (repo_identifier, commit_sha)
 ); 
+
+ALTER TABLE repo_results
+ADD COLUMN scanner_version TEXT NOT NULL DEFAULT 'v1',
+ADD COLUMN overall_risk VARCHAR(32);
+
+ALTER TABLE repo_results
+ADD CONSTRAINT repo_results_repo_commit_version_unique
+UNIQUE (repo_identifier, commit_sha, scanner_version);
+ALTER TABLE repo_results                                                                                                                                                                                                   
+  DROP CONSTRAINT IF EXISTS repo_results_repo_identifier_commit_sha_key; 
  
 CREATE TABLE requests (
     uid UUID PRIMARY KEY,
