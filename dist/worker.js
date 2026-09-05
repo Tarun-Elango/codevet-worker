@@ -78,6 +78,33 @@ export function validateRepoUrl(repoUrl) {
 function repoIdentifierFromUrl(repoUrl) {
     return repoUrl.pathname.replace(/^\//, '').replace(/\.git$/, '');
 }
+async function resolveDefaultBranchCommit(repoUrl) {
+    const [owner, repo] = repoIdentifierFromUrl(repoUrl).split('/');
+    const apiUrl = new URL(`https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/commits`);
+    apiUrl.searchParams.set('per_page', '1');
+    const headers = {
+        Accept: 'application/vnd.github+json',
+        'User-Agent': 'codevet-scanner-worker',
+        'X-GitHub-Api-Version': '2022-11-28',
+    };
+    if (process.env.GITHUB_TOKEN) {
+        headers.Authorization = `Bearer ${process.env.GITHUB_TOKEN}`;
+    }
+    const response = await fetch(apiUrl, {
+        headers,
+        signal: AbortSignal.timeout(15_000),
+    });
+    if (!response.ok) {
+        throw new Error(`GitHub returned ${response.status} while resolving the default branch commit`);
+    }
+    const commits = (await response.json());
+    const commitSha = commits[0]?.sha;
+    if (typeof commitSha !== 'string' ||
+        !/^[0-9a-f]{40}$/i.test(commitSha)) {
+        throw new Error('GitHub did not return a valid commit SHA');
+    }
+    return commitSha.toLowerCase();
+}
 export const scannerTemplate = Sandbox.template()
     .withPackages('git', 'ripgrep', 'ca-certificates', 'util-linux', 'passwd')
     .run(`
@@ -97,6 +124,8 @@ export const scannerTemplate = Sandbox.template()
     .workdir('/workspace');
 export async function processRequest(pool, channel, msg, job) {
     const { uid, repoUrl } = job;
+    let lockClient = null;
+    let lockKey = null;
     try {
         console.log(`[${uid}] Starting ${repoUrl}`);
         const result = await pool.query(`
@@ -125,11 +154,40 @@ export async function processRequest(pool, channel, msg, job) {
             return;
         }
         const repoIdentifier = repoIdentifierFromUrl(validatedRepoUrl);
+        // Jobs created from a URL-only request do not contain a SHA. Resolve the
+        // default branch before creating a sandbox so those jobs can use the same
+        // cache as commit-aware producers.
+        const commitSha = job.commitSha ??
+            (await resolveDefaultBranchCommit(validatedRepoUrl));
+        // Serialize scans for a repository across all worker instances. Without
+        // this lock, two deliveries can both miss the cache and create sandboxes
+        // before either one stores its result.
+        lockClient = await pool.connect();
+        lockKey = repoIdentifier.toLowerCase();
+        await lockClient.query('SELECT pg_advisory_lock(hashtextextended($1, 0))', [lockKey]);
+        const cachedResult = await lockClient.query(`
+        SELECT 1
+        FROM repo_results
+        WHERE lower(repo_identifier) = lower($1)
+          AND commit_sha = $2
+        LIMIT 1
+      `, [repoIdentifier, commitSha]);
+        if (cachedResult.rowCount && cachedResult.rowCount > 0) {
+            console.log(`[${uid}] Skipping already-scanned ${validatedRepoUrl.toString()}@${commitSha}`);
+            await lockClient.query(`
+          UPDATE requests
+          SET status = 'completed'
+          WHERE uid = $1
+        `, [uid]);
+            channel.ack(msg);
+            return;
+        }
         const scannerResult = await runScannerContainer({
             ...job,
             repoUrl: validatedRepoUrl.toString(),
+            commitSha,
         });
-        await pool.query(`
+        await lockClient.query(`
         INSERT INTO repo_results (
           uid,
           repo_identifier,
@@ -178,9 +236,24 @@ export async function processRequest(pool, channel, msg, job) {
         }
         channel.nack(msg, false, false);
     }
+    finally {
+        if (lockClient) {
+            try {
+                if (lockKey) {
+                    await lockClient.query('SELECT pg_advisory_unlock(hashtextextended($1, 0))', [lockKey]);
+                }
+            }
+            catch (error) {
+                console.error(`[${uid}] Failed to release scan lock:`, error);
+            }
+            finally {
+                lockClient.release();
+            }
+        }
+    }
 }
 async function runScannerContainer(job) {
-    const { uid, repoUrl } = job;
+    const { uid, repoUrl, commitSha } = job;
     console.log(`[${uid}] Creating Railway sandbox`);
     let sandbox;
     try {
@@ -194,6 +267,7 @@ async function runScannerContainer(job) {
             env: {
                 JOB_UID: uid,
                 REPO_URL: repoUrl,
+                COMMIT_SHA: commitSha,
             },
         });
     }
@@ -208,6 +282,7 @@ async function runScannerContainer(job) {
       HOME=/home/scanner \
       JOB_UID="$JOB_UID" \
       REPO_URL="$REPO_URL" \
+      COMMIT_SHA="$COMMIT_SHA" \
       GIT_TERMINAL_PROMPT=0 \
       bash --noprofile --norc <<'SCAN_SCRIPT'
         set -euo pipefail
@@ -217,22 +292,22 @@ async function runScannerContainer(job) {
         echo "Sandbox started"
         echo "Job: $JOB_UID"
 
+        git init repo
+        cd repo
         git \
           -c core.hooksPath=/dev/null \
           -c protocol.file.allow=never \
           -c protocol.ext.allow=never \
           -c filter.lfs.smudge= \
           -c filter.lfs.process= \
-          clone \
+          fetch \
           --depth=1 \
-          --single-branch \
           --no-tags \
-          --no-recurse-submodules \
           "$REPO_URL" \
-          repo
+          "$COMMIT_SHA"
+        git checkout --detach FETCH_HEAD
 
-        unset REPO_URL
-        cd repo
+        unset REPO_URL COMMIT_SHA
 
         echo "Repository cloned"
         echo "CODEVET_COMMIT:$(git rev-parse HEAD)"

@@ -4,7 +4,7 @@ import { Hono } from 'hono';
 import amqp from 'amqplib';
 import pg from 'pg';
 import 'dotenv/config';
-import { processRequest, validateRepoUrl, } from './worker.js';
+import { processRequest, } from './worker.js';
 const { Pool } = pg;
 const QUEUE_NAME = 'scan_requests';
 const RABBITMQ_URL = process.env.RABBITMQ_URL;
@@ -87,49 +87,6 @@ async function processJob(channel, msg) {
         // Don't requeue or it would loop forever.
         channel.nack(msg, false, false);
         return;
-    }
-    // repo_results stores canonical URLs, so normalize the URL before looking
-    // up a cached result. Invalid URLs are left to processRequest, which marks
-    // the request as invalid and acknowledges the message.
-    let normalizedRepoUrl = null;
-    try {
-        normalizedRepoUrl = validateRepoUrl(job.repoUrl).toString();
-    }
-    catch {
-        // processRequest performs the normal invalid-URL handling.
-    }
-    if (normalizedRepoUrl && job.commitSha) {
-        try {
-            const cachedResult = await pool.query(`
-          SELECT 1
-          FROM repo_results
-          WHERE repo_url = $1
-            AND commit_sha = $2
-          LIMIT 1
-        `, [normalizedRepoUrl, job.commitSha]);
-            if (cachedResult.rowCount && cachedResult.rowCount > 0) {
-                console.log(`[${job.uid}] Skipping already-scanned ${normalizedRepoUrl}@${job.commitSha}`);
-                channel.ack(msg);
-                return;
-            }
-        }
-        catch (error) {
-            console.error(`[${job.uid}] Failed to check scan cache:`, error);
-            try {
-                await pool.query(`
-            UPDATE requests
-            SET status = 'failed'
-            WHERE uid = $1
-          `, [job.uid]);
-            }
-            catch (dbError) {
-                console.error(`[${job.uid}] Failed to update request status:`, dbError);
-            }
-            // Do not requeue: the cache check failed and this message cannot be
-            // safely processed without risking a duplicate scan.
-            channel.nack(msg, false, false);
-            return;
-        }
     }
     await processRequest(pool, channel, msg, job);
 }
