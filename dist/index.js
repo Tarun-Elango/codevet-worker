@@ -25,6 +25,10 @@ const pool = new Pool({
 let rabbitConnection = null;
 let rabbitChannel = null;
 let workerReady = false;
+/**
+ * STEP A — HTTP health/ingress layer. This process accepts scan messages from
+ * RabbitMQ and never opens or executes repository files itself.
+ */
 const app = new Hono();
 app.get('/', (c) => {
     return c.json({
@@ -79,6 +83,10 @@ function parseJob(msg) {
         return null;
     }
 }
+/**
+ * STEP B — Deserialize and validate queue data before handing it to the
+ * trusted worker coordinator.
+ */
 async function processJob(channel, msg) {
     const job = parseJob(msg);
     if (!job) {
@@ -90,6 +98,10 @@ async function processJob(channel, msg) {
     }
     await processRequest(pool, channel, msg, job);
 }
+/**
+ * STEP C — Start the durable queue consumer. Prefetch provides bounded worker
+ * concurrency; each message is acknowledged only after processing finishes.
+ */
 async function startWorker() {
     console.log('Connecting to RabbitMQ...');
     rabbitConnection = await amqp.connect(rabbitmqUrl);

@@ -3,6 +3,10 @@ import type { Pool, PoolClient } from 'pg'
 
 import { runScannerContainer, SCANNER_VERSION } from './scan.js'
 
+/**
+ * STEP A — The queue message is the only input crossing into the trusted
+ * worker. It identifies a repository; it does not contain executable code.
+ */
 export type ScanJob = {
   uid: string
   repoUrl: string
@@ -60,6 +64,10 @@ function repoIdentifierFromUrl(repoUrl: URL): string {
 }
 
 // Resolve either GitHub's default branch or a ref selected in a /tree/ URL.
+/**
+ * STEP B — Resolve a branch to an immutable commit before creating a sandbox.
+ * The scanner always fetches this SHA rather than a moving branch name.
+ */
 async function resolveBranchCommit(repoUrl: URL, ref?: string): Promise<string> {
   const [owner, repo] = repoIdentifierFromUrl(repoUrl).split('/')
   const apiUrl = new URL(
@@ -111,6 +119,11 @@ async function resolveBranchCommit(repoUrl: URL, ref?: string): Promise<string> 
 }
 
 
+/**
+ * STEP C — Coordinate one scan in the trusted worker. Database state and the
+ * advisory lock prevent duplicate work; all repository inspection remains in
+ * runScannerContainer's isolated sandbox.
+ */
 export async function processRequest(
   pool: Pool,
   channel: Channel,
@@ -209,11 +222,24 @@ export async function processRequest(
       return
     }
 
+    /**
+     * STEP D — The sandbox returns structured inventory, candidates, static
+     * findings, correlations, and bounded snippets. No repository access is
+     * needed after this point.
+     */
     const scannerResult = await runScannerContainer({
       ...job,
       repoUrl: validatedRepoUrl.toString(),
       commitSha,
     })
+
+    /**
+     * STEP L — AI analysis placeholder. The evidence is ready for a future
+     * model integration; deliberately do not call an AI service yet.
+     */
+    console.log(
+      `[${uid}] AI analysis placeholder: ${scannerResult.securityFindings.length} security finding(s), ${scannerResult.candidateFlows.length} candidate flow(s)`
+    )
 
     await lockClient.query(
       `
@@ -245,11 +271,16 @@ export async function processRequest(
         validatedRepoUrl.toString(),
         commitSha,
         '',
-        JSON.stringify(scannerResult.findings),
+        JSON.stringify(scannerResult),
         SCANNER_VERSION,
       ]
     )
 
+    /**
+     * STEP M — Database persistence is intentionally unchanged for now. The
+     * existing result table receives the deterministic findings; no AI or new
+     * database integration is added in this pass.
+     */
     console.log(
       `[${uid}] Stored ${scannerResult.findings.length} finding(s)`
     )

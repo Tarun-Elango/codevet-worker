@@ -41,6 +41,10 @@ let rabbitChannel: Channel | null = null
 let workerReady = false
 
 
+/**
+ * STEP A — HTTP health/ingress layer. This process accepts scan messages from
+ * RabbitMQ and never opens or executes repository files itself.
+ */
 const app = new Hono()
 
 app.get('/', (c) => {
@@ -110,6 +114,10 @@ function parseJob(msg: ConsumeMessage): ScanJob | null {
   }
 }
 
+/**
+ * STEP B — Deserialize and validate queue data before handing it to the
+ * trusted worker coordinator.
+ */
 async function processJob(
   channel: Channel,
   msg: ConsumeMessage
@@ -128,6 +136,10 @@ async function processJob(
   await processRequest(pool, channel, msg, job)
 }
 
+/**
+ * STEP C — Start the durable queue consumer. Prefetch provides bounded worker
+ * concurrency; each message is acknowledged only after processing finishes.
+ */
 async function startWorker() {
   console.log('Connecting to RabbitMQ...')
 
