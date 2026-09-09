@@ -8,6 +8,8 @@ const MAX_RG_MATCHES_PER_CATEGORY = 40;
 const MAX_INVENTORY_FILES = 5000;
 const MAX_MANIFESTS = 100;
 const MAX_SANDBOX_OUTPUT_BYTES = 32 * 1024 * 1024;
+const SANDBOX_START_TIMEOUT_MS = 60_000;
+const SANDBOX_STATUS_POLL_MS = 250;
 export const SCANNER_VERSION = 'v2';
 const LOW_CONFIDENCE_PATH_PATTERN = /(^|\/)(?:test|tests|__tests__|fixtures?|mocks?|docs?|examples?)\/|(?:^|\/)(?:README|CHANGELOG|LICENSE)(?:\.|$)|(?:_test\.go|\.(?:test|spec)\.[jt]sx?|\.md|\.lock|min\.js|\.map)$|(?:^|\/)node_modules\//i;
 const SOURCE_FILE_PATTERN = /\.(?:ts|tsx|js|jsx|mjs|cjs|py|go|rs|java|kt|kts|rb|php|c|h|cc|cpp|cxx|cs|swift|dart|lua|sh|bash|zsh|html?|vue|svelte)$/i;
@@ -101,6 +103,24 @@ export const scannerTemplate = Sandbox.template()
  * STEP D — Enter a disposable sandbox for one immutable revision, inspect it,
  * and always destroy it. Repository content is treated as data throughout.
  */
+async function waitForSandboxRunning(sandbox) {
+    const deadline = Date.now() + SANDBOX_START_TIMEOUT_MS;
+    while (Date.now() < deadline) {
+        await sandbox.refresh();
+        if (sandbox.status === 'RUNNING') {
+            return;
+        }
+        if (sandbox.status === 'FAILED' ||
+            sandbox.status === 'DESTROYED' ||
+            sandbox.status === 'DESTROYING') {
+            throw new Error(`Sandbox failed to start (status: ${sandbox.status})`);
+        }
+        await new Promise((resolve) => {
+            setTimeout(resolve, SANDBOX_STATUS_POLL_MS);
+        });
+    }
+    throw new Error(`Sandbox did not start within ${SANDBOX_START_TIMEOUT_MS}ms`);
+}
 export async function runScannerContainer(job) {
     const { uid } = job;
     const commitSha = job.commitSha.toLowerCase();
@@ -127,6 +147,8 @@ export async function runScannerContainer(job) {
     }
     console.log(`[${uid}] Sandbox created: ${sandbox.id}`);
     try {
+        await waitForSandboxRunning(sandbox);
+        console.log(`[${uid}] Sandbox running`);
         const result = await sandbox.exec(`
     # Start with an allowlisted environment so inherited Git, shell, proxy,
     # loader, and credential settings cannot affect the scan.
