@@ -901,10 +901,21 @@ async function runAgentAnalysis(
         ${agent.piKeyEnv}="$CODEVET_AGENT_API_KEY" \\
         bash --noprofile --norc -c '
           cd /workspace/repo
-          if [ -n "$CODEVET_AI_MODEL" ]; then
-            exec /opt/codevet/pi --print --no-session --offline --provider "$CODEVET_AI_PROVIDER" --model "$CODEVET_AI_MODEL" --tools read,find,ls --no-context-files --no-extensions -e /opt/codevet/repository-scope.ts --no-skills --no-prompt-templates --no-approve --system-prompt "$CODEVET_AGENT_SYSTEM_PROMPT" -p "Perform the requested repository analysis."
+          # The template image may predate the root-owned launcher during a
+          # rolling deploy. Fall back to npm's authoritative global prefix so
+          # those images can still run their pinned Pi installation.
+          PI_COMMAND=/opt/codevet/pi
+          if [ ! -x "$PI_COMMAND" ]; then
+            PI_COMMAND="$(npm prefix -g)/bin/pi"
           fi
-          exec /opt/codevet/pi --print --no-session --offline --provider "$CODEVET_AI_PROVIDER" --tools read,find,ls --no-context-files --no-extensions -e /opt/codevet/repository-scope.ts --no-skills --no-prompt-templates --no-approve --system-prompt "$CODEVET_AGENT_SYSTEM_PROMPT" -p "Perform the requested repository analysis."
+          if [ ! -x "$PI_COMMAND" ]; then
+            echo "Pi executable is unavailable" >&2
+            exit 127
+          fi
+          if [ -n "$CODEVET_AI_MODEL" ]; then
+            exec "$PI_COMMAND" --print --no-session --offline --provider "$CODEVET_AI_PROVIDER" --model "$CODEVET_AI_MODEL" --tools read,find,ls --no-context-files --no-extensions -e /opt/codevet/repository-scope.ts --no-skills --no-prompt-templates --no-approve --system-prompt "$CODEVET_AGENT_SYSTEM_PROMPT" -p "Perform the requested repository analysis."
+          fi
+          exec "$PI_COMMAND" --print --no-session --offline --provider "$CODEVET_AI_PROVIDER" --tools read,find,ls --no-context-files --no-extensions -e /opt/codevet/repository-scope.ts --no-skills --no-prompt-templates --no-approve --system-prompt "$CODEVET_AGENT_SYSTEM_PROMPT" -p "Perform the requested repository analysis."
         '
     `
     // Stop streaming as soon as the model exceeds its response budget; do not
