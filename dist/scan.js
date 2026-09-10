@@ -17,7 +17,12 @@ export const MAX_AGENT_ITEMS = 50;
 export const MAX_AGENT_STRING_LENGTH = 4_000;
 export const MAX_AGENT_FILES = 20;
 export const MAX_AGENT_TOOL_CALLS = 15;
-export const SCANNER_VERSION = 'v3';
+// Keep the agent runtime version in the scanner cache key. Changing the
+// pinned agent must not reuse results produced by a different agent build.
+export const PI_AGENT_PACKAGE = '@earendil-works/pi-coding-agent';
+export const PI_AGENT_VERSION = '0.85.1';
+export const PI_AGENT_INTEGRITY = 'sha512-FGRN+OHbWaefBPGaTggAdLjrIHW+s2PzLyglz/5dfLzb9of7uuXMXYC0fJIeZTw+shS32o2cuQ9jF7YSDuL/oQ==';
+export const SCANNER_VERSION = `v7-pi-${PI_AGENT_VERSION}`;
 const LOW_CONFIDENCE_PATH_PATTERN = /(^|\/)(?:test|tests|__tests__|fixtures?|mocks?|docs?|examples?)\/|(?:^|\/)(?:README|CHANGELOG|LICENSE)(?:\.|$)|(?:_test\.go|\.(?:test|spec)\.[jt]sx?|\.md|\.lock|min\.js|\.map)$|(?:^|\/)node_modules\//i;
 const SOURCE_FILE_PATTERN = /\.(?:ts|tsx|js|jsx|mjs|cjs|py|go|rs|java|kt|kts|rb|php|c|h|cc|cpp|cxx|cs|swift|dart|lua|sh|bash|zsh|html?|vue|svelte)$/i;
 const KEYBOARD_BEHAVIOR_PATTERN = /(?:addEventListener\s*\(\s*['"`](?:key(?:down|up|press)|keypress)|onkey(?:down|up|press)\s*=|globalShortcut|RegisterHotKey|keylog(?:ger|ging)?|keystroke)/i;
@@ -246,9 +251,18 @@ export const scannerTemplate = Sandbox.template()
     chown scanner:scanner /workspace
 
     # Installed once when the Railway template is built, never from an
-    # untrusted checkout. Global installation leaves pi executable by scanner
-    # without granting that user any additional privileges.
-    npm install -g --ignore-scripts @earendil-works/pi-coding-agent
+    # untrusted checkout. Resolve the exact package tarball, verify its
+    # registry integrity before installation, and use the package's published
+    # shrinkwrap for its dependency tree. Global installation leaves pi
+    # executable by scanner without granting that user any additional
+    # privileges.
+    npm pack --ignore-scripts --pack-destination /tmp "${PI_AGENT_PACKAGE}@${PI_AGENT_VERSION}"
+    PI_AGENT_TARBALL="/tmp/earendil-works-pi-coding-agent-${PI_AGENT_VERSION}.tgz"
+    test -f "$PI_AGENT_TARBALL"
+    PI_AGENT_ACTUAL_INTEGRITY="$(node -e 'const { createHash } = require("node:crypto"); const { readFileSync } = require("node:fs"); process.stdout.write(\`sha512-\${createHash("sha512").update(readFileSync(process.argv[1])).digest("base64")}\`)' "$PI_AGENT_TARBALL")"
+    test "$PI_AGENT_ACTUAL_INTEGRITY" = "${PI_AGENT_INTEGRITY}"
+    npm install -g --ignore-scripts "$PI_AGENT_TARBALL"
+    node -e 'const { readFileSync } = require("node:fs"); if (JSON.parse(readFileSync(process.argv[1])).version !== process.argv[2]) process.exit(1)' "$(npm root -g)/${PI_AGENT_PACKAGE}/package.json" "${PI_AGENT_VERSION}"
     command -v pi
 
     id scanner
