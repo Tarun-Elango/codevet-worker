@@ -246,7 +246,7 @@ export const MAX_AGENT_LIST_RESULTS = 250
 export const PI_AGENT_PACKAGE = '@earendil-works/pi-coding-agent'
 export const PI_AGENT_VERSION = '0.85.1'
 export const PI_AGENT_INTEGRITY = 'sha512-FGRN+OHbWaefBPGaTggAdLjrIHW+s2PzLyglz/5dfLzb9of7uuXMXYC0fJIeZTw+shS32o2cuQ9jF7YSDuL/oQ=='
-export const SCANNER_VERSION = `v10-pi-${PI_AGENT_VERSION}`
+export const SCANNER_VERSION = `v11-pi-${PI_AGENT_VERSION}`
 
 const LOW_CONFIDENCE_PATH_PATTERN =
   /(^|\/)(?:test|tests|__tests__|fixtures?|mocks?|docs?|examples?)\/|(?:^|\/)(?:README|CHANGELOG|LICENSE)(?:\.|$)|(?:_test\.go|\.(?:test|spec)\.[jt]sx?|\.md|\.lock|min\.js|\.map)$|(?:^|\/)node_modules\//i
@@ -393,7 +393,11 @@ const AGENT_SYSTEM_PROMPT = `You are CodeVet's repository security and behavior 
 
 First establish context: inspect top-level structure, README if useful, the primary manifest, likely entry points, and a small number of core files. Then investigate the deterministic candidate leads. They are not confirmed problems. Candidate flows are especially weak leads: a correlation score measures structural proximity only and never establishes data transfer. Follow relevant imports and data flows where needed. Determine sensitive data/capabilities, source, destination, storage/logging, external services, and whether behavior matches the app's apparent purpose. Distinguish live behavior from examples, docs, tests, dead code, and unused imports. Ordinary process launching, password/credential input, microphone access, and network access are behaviors, not security issues. Do not report one as a security issue merely because an API is present; require evidence such as user-controlled shell input, credential exfiltration, sensitive logging, a hard-coded secret, or insecure transport. Do not execute code, install dependencies, modify files, or access secrets/environment variables. Files conventionally used for secrets (.env, keys, certificates, and credential files) are out of scope: never read them or request their contents.
 
-Your execution budget is enforced independently: at most ${MAX_AGENT_LLM_TURNS} LLM turns, ${MAX_AGENT_TOOL_CALLS} tool calls, ${MAX_AGENT_FILES} unique content files, and ${MAX_AGENT_READ_BYTES / 1024} KB of repository content. Prioritize evidence. Return ONLY one JSON object with status, summary, overallRisk, optional repositoryContext, suspiciousBehaviors, securityIssues, externalServices, and notes. Confidence is 0 through 1.`
+Your execution budget is enforced independently: at most ${MAX_AGENT_LLM_TURNS} LLM turns, ${MAX_AGENT_TOOL_CALLS} tool calls, ${MAX_AGENT_FILES} unique content files, and ${MAX_AGENT_READ_BYTES / 1024} KB of repository content. Prioritize evidence.
+
+Return ONLY one valid JSON object, with no Markdown fence or commentary, in exactly this shape:
+{"status":"completed","summary":"string or null","overallRisk":"none|low|medium|high|critical|unknown","repositoryContext":{"purpose":"string (optional)","applicationType":"string (optional)","mainComponents":["string"],"filesInspected":["string"]},"suspiciousBehaviors":[{"category":"string","file":"string","line":1,"description":"string","reason":"string","confidence":0.0,"relatedFiles":["string"]}],"securityIssues":[{"category":"string","file":"string","line":1,"description":"string","severity":"low|medium|high|critical","confidence":0.0,"relatedFiles":["string"]}],"externalServices":[{"host":"string","purpose":"string","file":"string","line":1,"dataSent":["string"]}],"notes":["string"]}
+All four arrays are required, even when empty. Confidence is a number from 0 through 1. The required suspiciousBehaviors item fields are category, file, description, reason, and confidence. The required securityIssues item fields are category, file, description, severity, and confidence. line and relatedFiles are optional. Every externalServices field is optional. Omit unknown optional fields instead of returning null. repositoryContext itself is optional.`
 
 type AgentPromptEvidence = {
   inventory: RepositoryInventory
@@ -542,10 +546,10 @@ export function parseAgentOutput(stdout: string): AgentAnalysis {
       const x = item as Record<string, unknown>
       const category = boundedString(x.category, 200), file = boundedString(x.file, 1_000), description = boundedString(x.description), confidence = boundedConfidence(x.confidence)
       if (!category || !file || !description || confidence === undefined) throw new Error('invalid agent finding')
-      const line = x.line === undefined ? undefined : boundedLine(x.line)
-      if (x.line !== undefined && !line) throw new Error('invalid line')
-      const relatedFiles = x.relatedFiles === undefined ? undefined : boundedStringArray(x.relatedFiles, MAX_AGENT_FILES)
-      if (x.relatedFiles !== undefined && !relatedFiles) throw new Error('invalid related files')
+      const line = x.line == null ? undefined : boundedLine(x.line)
+      if (x.line != null && !line) throw new Error('invalid line')
+      const relatedFiles = x.relatedFiles == null ? undefined : boundedStringArray(x.relatedFiles, MAX_AGENT_FILES)
+      if (x.relatedFiles != null && !relatedFiles) throw new Error('invalid related files')
       if (issue) {
         const severity = x.severity
         if (!['low', 'medium', 'high', 'critical'].includes(String(severity))) throw new Error('invalid severity')
@@ -562,17 +566,17 @@ export function parseAgentOutput(stdout: string): AgentAnalysis {
   const externalServices = value.externalServices.map((item) => {
     if (!item || typeof item !== 'object' || Array.isArray(item)) throw new Error('invalid service')
     const x = item as Record<string, unknown>
-    const optional = (key: string, max?: number) => x[key] === undefined ? undefined : boundedString(x[key], max)
-    const host = optional('host', 500), purpose = optional('purpose'), file = optional('file', 1_000), line = x.line === undefined ? undefined : boundedLine(x.line), dataSent = x.dataSent === undefined ? undefined : boundedStringArray(x.dataSent)
-    if ((x.host !== undefined && !host) || (x.purpose !== undefined && !purpose) || (x.file !== undefined && !file) || (x.line !== undefined && !line) || (x.dataSent !== undefined && !dataSent)) throw new Error('invalid service fields')
+    const optional = (key: string, max?: number) => x[key] == null ? undefined : boundedString(x[key], max)
+    const host = optional('host', 500), purpose = optional('purpose'), file = optional('file', 1_000), line = x.line == null ? undefined : boundedLine(x.line), dataSent = x.dataSent == null ? undefined : boundedStringArray(x.dataSent)
+    if ((x.host != null && !host) || (x.purpose != null && !purpose) || (x.file != null && !file) || (x.line != null && !line) || (x.dataSent != null && !dataSent)) throw new Error('invalid service fields')
     return { ...(host ? { host } : {}), ...(purpose ? { purpose } : {}), ...(file ? { file } : {}), ...(line ? { line } : {}), ...(dataSent ? { dataSent } : {}) }
   })
   let repositoryContext: AgentAnalysis['repositoryContext']
-  if (value.repositoryContext !== undefined) {
-    if (!value.repositoryContext || typeof value.repositoryContext !== 'object' || Array.isArray(value.repositoryContext)) throw new Error('invalid context')
+  if (value.repositoryContext != null) {
+    if (typeof value.repositoryContext !== 'object' || Array.isArray(value.repositoryContext)) throw new Error('invalid context')
     const x = value.repositoryContext as Record<string, unknown>
-    const purpose = x.purpose === undefined ? undefined : boundedString(x.purpose), applicationType = x.applicationType === undefined ? undefined : boundedString(x.applicationType), mainComponents = x.mainComponents === undefined ? undefined : boundedStringArray(x.mainComponents), filesInspected = x.filesInspected === undefined ? undefined : boundedStringArray(x.filesInspected, MAX_AGENT_FILES)
-    if ((x.purpose !== undefined && !purpose) || (x.applicationType !== undefined && !applicationType) || (x.mainComponents !== undefined && !mainComponents) || (x.filesInspected !== undefined && !filesInspected)) throw new Error('invalid context fields')
+    const purpose = x.purpose == null ? undefined : boundedString(x.purpose), applicationType = x.applicationType == null ? undefined : boundedString(x.applicationType), mainComponents = x.mainComponents == null ? undefined : boundedStringArray(x.mainComponents), filesInspected = x.filesInspected == null ? undefined : boundedStringArray(x.filesInspected, MAX_AGENT_FILES)
+    if ((x.purpose != null && !purpose) || (x.applicationType != null && !applicationType) || (x.mainComponents != null && !mainComponents) || (x.filesInspected != null && !filesInspected)) throw new Error('invalid context fields')
     repositoryContext = { ...(purpose ? { purpose } : {}), ...(applicationType ? { applicationType } : {}), ...(mainComponents ? { mainComponents } : {}), ...(filesInspected ? { filesInspected } : {}) }
   }
   return { status: 'completed', summary, overallRisk: value.overallRisk as AgentAnalysis['overallRisk'], ...(repositoryContext ? { repositoryContext } : {}), suspiciousBehaviors, securityIssues, externalServices, notes }
@@ -970,8 +974,15 @@ async function runAgentAnalysis(
       const analysis = parseAgentOutput(result.stdout)
       console.log(`[${uid}] AI analysis completed${analysis.repositoryContext?.filesInspected ? `; inspected ${analysis.repositoryContext.filesInspected.length} files` : ''}`)
       return analysis
-    } catch {
-      console.log(`[${uid}] AI analysis failed: invalid output`)
+    } catch (error) {
+      // JSON.parse diagnostics can quote model text, so never log a raw
+      // SyntaxError. Our explicit validator errors contain fixed messages.
+      const reason = error instanceof SyntaxError
+        ? 'malformed JSON'
+        : error instanceof Error
+          ? error.message
+          : 'unknown validation error'
+      console.log(`[${uid}] AI analysis failed: invalid output (${reason.slice(0, 200)})`)
       return emptyAgentAnalysis('failed', 'Agent returned invalid structured output')
     }
   } catch {
