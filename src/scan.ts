@@ -934,7 +934,9 @@ async function runAgentAnalysis(
       return emptyAgentAnalysis('failed', 'Agent returned invalid structured output')
     }
     if (result.exitCode !== 0) {
-      console.log(`[${uid}] AI analysis failed: process error`)
+      const diagnostic = redactSensitiveText(result.stderr).trim().slice(0, 1_000)
+      console.log(`[${uid}] AI analysis failed: process error (exit ${result.exitCode})`)
+      if (diagnostic) console.error(`[${uid}] AI analysis stderr: ${diagnostic}`)
       return emptyAgentAnalysis('failed', 'Agent analysis failed')
     }
     try {
