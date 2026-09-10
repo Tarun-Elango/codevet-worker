@@ -487,17 +487,16 @@ export const scannerTemplate = Sandbox.template()
         return undefined
       }
 
-      function deny(reason) {
-        // A blocked call becomes an error result for the model. terminate
-        // prevents a disallowed request from starting another LLM turn.
-        return { block: true, reason, terminate: true }
-      }
-
-      function requestFinalResponse(reason) {
+      function denyAndFinalize(reason) {
+        // The prohibited tool never executes. Reserve the next provider turn
+        // solely for serializing the final structured response.
         finalResponseRequired = true
         return {
           block: true,
-          reason: reason + "; do not call another tool. Return the required final JSON object now.",
+          reason:
+            reason +
+            "; repository inspection is now complete. " +
+            "Do not call another tool. Return the required final JSON object now.",
         }
       }
 
@@ -516,7 +515,7 @@ export const scannerTemplate = Sandbox.template()
         // A model that ignores the finalization instruction must not start
         // more inspection work on the reserved response turn.
         if (isFinalResponseTurn) {
-          return deny("Inspection is complete; return the final JSON object now")
+          return denyAndFinalize("Inspection is complete")
         }
 
         // Count attempted calls before any other check. Once either budget is
@@ -524,12 +523,12 @@ export const scannerTemplate = Sandbox.template()
         // with the denial result so print mode receives a final response.
         toolCalls += 1
         if (toolCalls > MAX_TOOL_CALLS || llmTurns >= MAX_LLM_TURNS - 1) {
-          return requestFinalResponse("CodeVet inspection budget exhausted")
+          return denyAndFinalize("CodeVet inspection budget exhausted")
         }
 
         // Fail closed if Pi ever makes another tool available to this process.
         if (!SCOPED_TOOLS.has(event.toolName)) {
-          return deny("Only repository inspection tools are permitted")
+          return denyAndFinalize("Only repository inspection tools are permitted")
         }
 
         const input = event.input
@@ -544,7 +543,7 @@ export const scannerTemplate = Sandbox.template()
 
         const target = await repositoryTarget(path)
         if (!target) {
-          return deny("Access is restricted to existing files and directories under /workspace/repo")
+          return denyAndFinalize("Access is restricted to existing files and directories under /workspace/repo")
         }
 
         if (event.toolName === "read") {
@@ -552,22 +551,22 @@ export const scannerTemplate = Sandbox.template()
           try {
             file = await stat(target)
           } catch {
-            return deny("Repository target is unavailable")
+            return denyAndFinalize("Repository target is unavailable")
           }
           if (!file.isFile()) {
-            return deny("read requires an explicit regular repository file")
+            return denyAndFinalize("read requires an explicit regular repository file")
           }
           if (file.size > MAX_SINGLE_FILE_READ_BYTES) {
-            return deny("Single-file read budget exceeded")
+            return denyAndFinalize("Single-file read budget exceeded")
           }
           if (!inspectedFiles.has(target) && inspectedFiles.size >= MAX_FILES) {
-            return requestFinalResponse("Unique-file inspection budget exhausted")
+            return denyAndFinalize("Unique-file inspection budget exhausted")
           }
           // Pi's read implementation loads the file before truncating output.
           // Reserve the full size before execution, including repeated reads,
           // to make the byte ceiling hard.
           if (reservedReadBytes + file.size > MAX_READ_BYTES) {
-            return requestFinalResponse("Repository read-byte budget exhausted")
+            return denyAndFinalize("Repository read-byte budget exhausted")
           }
           inspectedFiles.add(target)
           reservedReadBytes += file.size
@@ -731,6 +730,8 @@ async function runAgentAnalysis(sandbox, uid, scannerResult, agent) {
             return analysis;
         }
         catch (error) {
+            console.log(`[${uid}] AI output diagnostics: stdout=${Buffer.byteLength(result.stdout)}B ` +
+                `stderr=${Buffer.byteLength(result.stderr)}B exit=${result.exitCode}`);
             // JSON.parse diagnostics can quote model text, so never log a raw
             // SyntaxError. Our explicit validator errors contain fixed messages.
             const reason = error instanceof SyntaxError
