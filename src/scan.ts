@@ -1218,23 +1218,23 @@ SECRET_PRESENCE_SCANNER
 const readline = require('node:readline')
 const category = process.argv[2]
 const limit = Number(process.argv[3])
-const lowConfidencePath = /(^|\/)(?:test|tests|__tests__|fixtures?|mocks?|docs?|examples?)\/|(?:^|\/)(?:README|CHANGELOG|LICENSE)(?:\.|$)|(?:_test\.go|\.(?:test|spec)\.[jt]sx?|\.md|\.lock|min\.js|\.map)$/i
-const sourceFile = /\.(?:[cm]?[jt]sx?|py|go|rs|java|kt|kts|rb|php|c|h|cc|cpp|cxx|cs|swift|dart|lua|sh|bash|zsh|fish|ksh|dash|ps1|bat|cmd|vue|svelte)$/i
-const entrypointPath = /(?:^|\/)(?:main|index|app|server|cli)\.(?:[cm]?[jt]sx?|py|go|rs|rb|php)$|(?:^|\/)cmd\/[^/]+\.(?:go|rs)$/i
-const networkSink = /\b(?:fetch|axios|got|request|http|https|grpc|requests?|httpx|aiohttp|urllib|reqwest)\s*(?:\.|\()|sendBeacon\s*\(|new\s+WebSocket\s*\(|XMLHttpRequest|\b(?:curl|wget)\b|\b(?:net\.)?connect\s*\(|\bsocket\s*\(|\b(?:HttpClient|OkHttp|Net::HTTP)\b/i
+const lowConfidencePath = /(^|\\/)(?:test|tests|__tests__|fixtures?|mocks?|docs?|examples?)\\/|(?:^|\\/)(?:README|CHANGELOG|LICENSE)(?:\\.|$)|(?:_test\\.go|\\.(?:test|spec)\\.[jt]sx?|\\.md|\\.lock|min\\.js|\\.map)$/i
+const sourceFile = /\\.(?:[cm]?[jt]sx?|py|go|rs|java|kt|kts|rb|php|c|h|cc|cpp|cxx|cs|swift|dart|lua|sh|bash|zsh|fish|ksh|dash|ps1|bat|cmd|vue|svelte)$/i
+const entrypointPath = /(?:^|\\/)(?:main|index|app|server|cli)\\.(?:[cm]?[jt]sx?|py|go|rs|rb|php)$|(?:^|\\/)cmd\\/[^/]+\\.(?:go|rs)$/i
+const networkSink = /\\b(?:fetch|axios|got|request|http|https|grpc|requests?|httpx|aiohttp|urllib|reqwest)\\s*(?:\\.|\\()|sendBeacon\\s*\\(|new\\s+WebSocket\\s*\\(|XMLHttpRequest|\\b(?:curl|wget)\\b|\\b(?:net\\.)?connect\\s*\\(|\\bsocket\\s*\\(|\\b(?:HttpClient|OkHttp|Net::HTTP)\\b/i
 const capabilityApi = {
-  keyboard_input: /addEventListener\s*\(\s*['"\`](?:key(?:down|up|press)|keypress)|onkey(?:down|up|press)\s*=|globalShortcut|RegisterHotKey|keylog(?:ger|ging)?|keystroke/i,
+  keyboard_input: /addEventListener\\s*\\(\\s*['"\`](?:key(?:down|up|press)|keypress)|onkey(?:down|up|press)\\s*=|globalShortcut|RegisterHotKey|keylog(?:ger|ging)?|keystroke/i,
   microphone_access: /getUserMedia|mediaDevices|MediaRecorder|AVAudioRecorder|AVAudioEngine|AVCapture(?:Device|Session)|AudioRecord|RECORD_AUDIO|pyaudio|sounddevice/i,
-  clipboard_access: /navigator\.clipboard|pasteboard|xclip|pbcopy|GetClipboardData/i,
+  clipboard_access: /navigator\\.clipboard|pasteboard|xclip|pbcopy|GetClipboardData/i,
   external_http: networkSink,
-  process_execution: /\b(?:exec|execFile|spawn|fork)\s*\(|\bchild_process\s*\.|\bsubprocess\.(?:run|Popen|call)\s*\(|\bos\.system\s*\(|\beval\s*\(|new\s+Function\s*\(/i,
-  tracking_telemetry: /(?:analytics|telemetry|tracking)\s*(?:\.|\(|\[)|(?:track|identify|capture|fingerprint)\s*\(/i,
+  process_execution: /\\b(?:exec|execFile|spawn|fork)\\s*\\(|\\bchild_process\\s*\\.|\\bsubprocess\\.(?:run|Popen|call)\\s*\\(|\\bos\\.system\\s*\\(|\\beval\\s*\\(|new\\s+Function\\s*\\(/i,
+  tracking_telemetry: /(?:analytics|telemetry|tracking)\\s*(?:\\.|\\(|\\[)|(?:track|identify|capture|fingerprint)\\s*\\(/i,
   // Deliberately exclude bare words such as camera, Documents, hostname,
   // process, cookies, and device_id. Those are keywords, not API evidence.
-  sensitive_system_access: /getDisplayMedia|screenCapture|desktopCapturer|screencapture|document\.cookie|browser\.(?:cookies|history)|os\.(?:homedir|hostname)|process\.(?:env|platform)|\/proc\/|\/dev\//i,
-  credential_handling: /(?:querySelector|getElementById|FormData|localStorage|sessionStorage|\.value\b)[^\n]{0,100}\b(?:password|passwd|credential|token|api[_-]?key|secret)\b|\b(?:password|passwd|credential|token|api[_-]?key|secret)\b[^\n]{0,100}(?:\.value\b|querySelector|FormData|localStorage|sessionStorage)/i,
+  sensitive_system_access: /getDisplayMedia|screenCapture|desktopCapturer|screencapture|document\\.cookie|browser\\.(?:cookies|history)|os\\.(?:homedir|hostname)|process\\.(?:env|platform)|\\/proc\\/|\\/dev\\//i,
+  credential_handling: /(?:querySelector|getElementById|FormData|localStorage|sessionStorage|\\.value\\b)[^\\n]{0,100}\\b(?:password|passwd|credential|token|api[_-]?key|secret)\\b|\\b(?:password|passwd|credential|token|api[_-]?key|secret)\\b[^\\n]{0,100}(?:\\.value\\b|querySelector|FormData|localStorage|sessionStorage)/i,
 }
-const sourceExpression = /(?:\.value\b|FormData\s*\(|(?:req(?:uest)?\.)?(?:body|params|query)\b|process\.env\b|(?:localStorage|sessionStorage)\.getItem\s*\(|document\.cookie|os\.(?:hostname|homedir)\s*\(|navigator\.(?:clipboard|mediaDevices)|(?:event|e)\.key\b)/i
+const sourceExpression = /(?:\\.value\\b|FormData\\s*\\(|(?:req(?:uest)?\\.)?(?:body|params|query)\\b|process\\.env\\b|(?:localStorage|sessionStorage)\\.getItem\\s*\\(|document\\.cookie|os\\.(?:hostname|homedir)\\s*\\(|navigator\\.(?:clipboard|mediaDevices)|(?:event|e)\\.key\\b)/i
 const sensitiveSourceCategory = new Set([
   'keyboard_input', 'microphone_access', 'clipboard_access',
   'credential_handling', 'sensitive_system_access',
@@ -1254,7 +1254,7 @@ function score(candidate) {
   if (!isCapabilityApi && !isSourceExpression) value -= 3
   if (isLowConfidence) value -= 4
   // Comments are useful only as corroborating context, never as top leads.
-  if (/^\s*(?:\/\/|#|\/\*|\*|<!--)/.test(text)) value -= 50
+  if (/^\\s*(?:\\/\\/|#|\\/\\*|\\*|<!--)/.test(text)) value -= 50
 
   candidate.capabilityApi = isCapabilityApi
   candidate.sourceExpression = isSourceExpression
@@ -1274,7 +1274,7 @@ input.on('line', (line) => {
     const event = JSON.parse(line)
     if (event.type !== 'match') return
     const data = event.data || {}
-    const file = String(data.path?.text || '').replace(/^\.\//, '')
+    const file = String(data.path?.text || '').replace(/^\\.\\//, '')
     const lineNumber = Number(data.line_number)
     const text = String(data.lines?.text || '')
     const submatch = data.submatches?.[0] || {}
