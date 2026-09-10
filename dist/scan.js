@@ -375,7 +375,11 @@ export const scannerTemplate = Sandbox.template()
     test "$PI_AGENT_ACTUAL_INTEGRITY" = "${PI_AGENT_INTEGRITY}"
     npm install -g --ignore-scripts "$PI_AGENT_TARBALL"
     node -e 'const { readFileSync } = require("node:fs"); if (JSON.parse(readFileSync(process.argv[1])).version !== process.argv[2]) process.exit(1)' "$(npm root -g)/${PI_AGENT_PACKAGE}/package.json" "${PI_AGENT_VERSION}"
-    command -v pi
+    # Keep a root-owned absolute launcher. AI analysis intentionally uses
+    # env -i, so its minimal PATH must not determine where npm placed global
+    # executables (which differs between base images).
+    PI_BIN="$(command -v pi)"
+    test -x "$PI_BIN"
 
     # Pi's built-in read-only tools resolve absolute paths too. The model is
     # untrusted, so enforce repository containment and resource budgets in
@@ -554,6 +558,16 @@ export const scannerTemplate = Sandbox.template()
     chown root:root /opt/codevet/repository-scope.ts
     chmod 0644 /opt/codevet/repository-scope.ts
 
+    # Do not rely on the scanner process PATH to find npm's global bin.
+    # PI_BIN was resolved immediately after installing the pinned package,
+    # before any untrusted repository content is present.
+    cat > /opt/codevet/pi <<EOF
+    #!/bin/sh
+    exec "$PI_BIN" "\\$@"
+    EOF
+    chown root:root /opt/codevet/pi
+    chmod 0755 /opt/codevet/pi
+
     id scanner
   `)
     .workdir('/workspace');
@@ -621,9 +635,9 @@ async function runAgentAnalysis(sandbox, uid, scannerResult, agent) {
         bash --noprofile --norc -c '
           cd /workspace/repo
           if [ -n "$CODEVET_AI_MODEL" ]; then
-            exec pi --print --no-session --offline --provider "$CODEVET_AI_PROVIDER" --model "$CODEVET_AI_MODEL" --tools read,find,ls --no-context-files --no-extensions -e /opt/codevet/repository-scope.ts --no-skills --no-prompt-templates --no-approve --system-prompt "$CODEVET_AGENT_SYSTEM_PROMPT" -p "Perform the requested repository analysis."
+            exec /opt/codevet/pi --print --no-session --offline --provider "$CODEVET_AI_PROVIDER" --model "$CODEVET_AI_MODEL" --tools read,find,ls --no-context-files --no-extensions -e /opt/codevet/repository-scope.ts --no-skills --no-prompt-templates --no-approve --system-prompt "$CODEVET_AGENT_SYSTEM_PROMPT" -p "Perform the requested repository analysis."
           fi
-          exec pi --print --no-session --offline --provider "$CODEVET_AI_PROVIDER" --tools read,find,ls --no-context-files --no-extensions -e /opt/codevet/repository-scope.ts --no-skills --no-prompt-templates --no-approve --system-prompt "$CODEVET_AGENT_SYSTEM_PROMPT" -p "Perform the requested repository analysis."
+          exec /opt/codevet/pi --print --no-session --offline --provider "$CODEVET_AI_PROVIDER" --tools read,find,ls --no-context-files --no-extensions -e /opt/codevet/repository-scope.ts --no-skills --no-prompt-templates --no-approve --system-prompt "$CODEVET_AGENT_SYSTEM_PROMPT" -p "Perform the requested repository analysis."
         '
     `;
         // Stop streaming as soon as the model exceeds its response budget; do not
