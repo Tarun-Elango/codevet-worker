@@ -1206,7 +1206,7 @@ export async function runScannerContainer(
         }
 
         walk('.')
-        SECRET_PRESENCE_SCANNER
+SECRET_PRESENCE_SCANNER
 
         # STEP H — Pass 1: discover match-only leads. Do not ask rg for
         # context here: broad expressions can otherwise consume the output
