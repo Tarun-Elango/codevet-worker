@@ -233,13 +233,27 @@ export async function processRequest(
       commitSha,
     })
 
-    /**
-     * STEP L — AI analysis placeholder. The evidence is ready for a future
-     * model integration; deliberately do not call an AI service yet.
-     */
+    const deterministicIssues = scannerResult.securityFindings
+    const aiIssues =
+      scannerResult.agentAnalysis?.status === 'completed'
+        ? scannerResult.agentAnalysis.securityIssues
+        : []
+
     console.log(
-      `[${uid}] AI analysis placeholder: ${scannerResult.securityFindings.length} security finding(s), ${scannerResult.candidateFlows.length} candidate flow(s)`
+      `[${uid}] Analysis: ` +
+      `${deterministicIssues.length} deterministic finding(s), ` +
+      `${aiIssues.length} AI security issue(s), ` +
+      `${scannerResult.candidateFlows.length} candidate flow(s)`
     )
+
+    const storedFindings = {
+      deterministic: scannerResult.securityFindings,
+      aiSecurityIssues: scannerResult.agentAnalysis?.securityIssues ?? [],
+      suspiciousBehaviors:
+        scannerResult.agentAnalysis?.suspiciousBehaviors ?? [],
+      externalServices: scannerResult.agentAnalysis?.externalServices ?? [],
+      candidateFlows: scannerResult.candidateFlows,
+    }
 
     await lockClient.query(
       `
@@ -254,7 +268,7 @@ export async function processRequest(
           overall_risk,
           scanned_at
         )
-        VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, NULL, NOW())
+        VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, NOW())
         ON CONFLICT (repo_identifier, commit_sha, scanner_version)
         DO UPDATE SET
           repo_url = EXCLUDED.repo_url,
@@ -270,20 +284,14 @@ export async function processRequest(
         repoIdentifier,
         validatedRepoUrl.toString(),
         commitSha,
-        '',
-        JSON.stringify(scannerResult),
+        scannerResult.agentAnalysis?.summary ?? null,
+        JSON.stringify(storedFindings),
         SCANNER_VERSION,
+        scannerResult.agentAnalysis?.overallRisk ?? 'unknown',
       ]
     )
 
-    /**
-     * STEP M — Database persistence is intentionally unchanged for now. The
-     * existing result table receives the deterministic findings; no AI or new
-     * database integration is added in this pass.
-     */
-    console.log(
-      `[${uid}] Stored ${scannerResult.findings.length} finding(s)`
-    )
+    console.log(`[${uid}] Stored analysis`)
 
     await pool.query(
       `
