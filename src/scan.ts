@@ -247,7 +247,7 @@ export const MAX_AGENT_LIST_RESULTS = 250
 export const PI_AGENT_PACKAGE = '@earendil-works/pi-coding-agent'
 export const PI_AGENT_VERSION = '0.85.1'
 export const PI_AGENT_INTEGRITY = 'sha512-FGRN+OHbWaefBPGaTggAdLjrIHW+s2PzLyglz/5dfLzb9of7uuXMXYC0fJIeZTw+shS32o2cuQ9jF7YSDuL/oQ=='
-export const SCANNER_VERSION = `v14-pi-${PI_AGENT_VERSION}`
+export const SCANNER_VERSION = `v15-pi-${PI_AGENT_VERSION}`
 
 const LOW_CONFIDENCE_PATH_PATTERN =
   /(^|\/)(?:test|tests|__tests__|fixtures?|mocks?|docs?|examples?)\/|(?:^|\/)(?:README|CHANGELOG|LICENSE)(?:\.|$)|(?:_test\.go|\.(?:test|spec)\.[jt]sx?|\.md|\.lock|min\.js|\.map)$|(?:^|\/)node_modules\//i
@@ -835,26 +835,9 @@ export const scannerTemplate = Sandbox.template()
       })
 
       pi.on("agent_end", async () => {
-        // A system-prompt instruction alone cannot force a model to call a
-        // tool. If it tries to finish early, queue a trusted follow-up so Pi
-        // continues the same run and gives it another chance to inspect.
-        if (
-          !finalResponseRequired &&
-          inspectedFiles.size < MIN_FILES_TO_INSPECT &&
-          toolCalls < MAX_TOOL_CALLS &&
-          llmTurns < MAX_LLM_TURNS - 1
-        ) {
-          pi.sendUserMessage(
-            "Your response was rejected because you inspected " +
-              inspectedFiles.size +
-              " repository files. Use the repository tools now: list the repository root, read the primary manifest or README, and read at least " +
-              MIN_FILES_TO_INSPECT +
-              " relevant source files before returning the final JSON.",
-            { deliverAs: "followUp" }
-          )
-          return
-        }
-
+        // Tool use is model-controlled. Record what was inspected, but do not
+        // repeatedly prompt or reject a valid result when the model chooses to
+        // analyze the bounded scanner evidence already present in its prompt.
         await writeFile(
           "/tmp/codevet-agent-metrics.json",
           JSON.stringify({
@@ -1046,18 +1029,15 @@ async function runAgentAnalysis(
         throw new Error('invalid agent metrics')
       }
       const filesInspected = (metrics as { filesInspected: string[] }).filesInspected
-      if (filesInspected.length < MIN_FILES_TO_INSPECT) {
-        console.log(
-          `[${uid}] AI analysis failed: inspected only ` +
-          `${filesInspected.length} of ${MIN_FILES_TO_INSPECT} required files`
-        )
-        return emptyAgentAnalysis(
-          'failed',
-          'Agent did not inspect enough repository files'
-        )
-      }
       const analysis = parseAgentOutput(result.stdout)
-      console.log(`[${uid}] AI analysis completed; inspected ${filesInspected.length} files`)
+      if (filesInspected.length < MIN_FILES_TO_INSPECT) {
+        console.warn(
+          `[${uid}] AI analysis completed from scanner evidence; directly inspected ` +
+          `${filesInspected.length} of ${MIN_FILES_TO_INSPECT} requested files`
+        )
+      } else {
+        console.log(`[${uid}] AI analysis completed; inspected ${filesInspected.length} files`)
+      }
       return analysis
     } catch (error) {
       console.log(
