@@ -246,7 +246,7 @@ export const MAX_AGENT_LIST_RESULTS = 250
 export const PI_AGENT_PACKAGE = '@earendil-works/pi-coding-agent'
 export const PI_AGENT_VERSION = '0.85.1'
 export const PI_AGENT_INTEGRITY = 'sha512-FGRN+OHbWaefBPGaTggAdLjrIHW+s2PzLyglz/5dfLzb9of7uuXMXYC0fJIeZTw+shS32o2cuQ9jF7YSDuL/oQ=='
-export const SCANNER_VERSION = `v11-pi-${PI_AGENT_VERSION}`
+export const SCANNER_VERSION = `v12-pi-${PI_AGENT_VERSION}`
 
 const LOW_CONFIDENCE_PATH_PATTERN =
   /(^|\/)(?:test|tests|__tests__|fixtures?|mocks?|docs?|examples?)\/|(?:^|\/)(?:README|CHANGELOG|LICENSE)(?:\.|$)|(?:_test\.go|\.(?:test|spec)\.[jt]sx?|\.md|\.lock|min\.js|\.map)$|(?:^|\/)node_modules\//i
@@ -708,6 +708,11 @@ export const scannerTemplate = Sandbox.template()
       let toolCalls = 0
       let reservedReadBytes = 0
       let llmTurns = 0
+      // When an inspection budget is reached, reserve one provider turn for
+      // the model to serialize its result instead of terminating on a tool
+      // call and leaving print-mode stdout empty.
+      let finalResponseRequired = false
+      let isFinalResponseTurn = false
 
       async function repositoryTarget(value) {
         if (typeof value !== "string" || value.length === 0) return undefined
@@ -729,8 +734,16 @@ export const scannerTemplate = Sandbox.template()
 
       function deny(reason) {
         // A blocked call becomes an error result for the model. terminate
-        // prevents a budget-exhausted batch from starting another LLM turn.
+        // prevents a disallowed request from starting another LLM turn.
         return { block: true, reason, terminate: true }
+      }
+
+      function requestFinalResponse(reason) {
+        finalResponseRequired = true
+        return {
+          block: true,
+          reason: reason + "; do not call another tool. Return the required final JSON object now.",
+        }
       }
 
       pi.on("before_provider_request", (_event, ctx) => {
@@ -740,15 +753,23 @@ export const scannerTemplate = Sandbox.template()
           ctx.abort()
           return
         }
+        isFinalResponseTurn = finalResponseRequired
         llmTurns += 1
       })
 
       pi.on("tool_call", async (event) => {
-        // Count attempted calls before any other check. Otherwise a model can
-        // loop indefinitely over calls that are rejected by another guard.
+        // A model that ignores the finalization instruction must not start
+        // more inspection work on the reserved response turn.
+        if (isFinalResponseTurn) {
+          return deny("Inspection is complete; return the final JSON object now")
+        }
+
+        // Count attempted calls before any other check. Once either budget is
+        // reached, block the call but let Pi make one last provider request
+        // with the denial result so print mode receives a final response.
         toolCalls += 1
-        if (toolCalls > MAX_TOOL_CALLS) {
-          return deny("CodeVet tool-call budget exhausted")
+        if (toolCalls > MAX_TOOL_CALLS || llmTurns >= MAX_LLM_TURNS - 1) {
+          return requestFinalResponse("CodeVet inspection budget exhausted")
         }
 
         // Fail closed if Pi ever makes another tool available to this process.
@@ -785,13 +806,13 @@ export const scannerTemplate = Sandbox.template()
             return deny("Single-file read budget exceeded")
           }
           if (!inspectedFiles.has(target) && inspectedFiles.size >= MAX_FILES) {
-            return deny("Unique-file inspection budget exhausted")
+            return requestFinalResponse("Unique-file inspection budget exhausted")
           }
           // Pi's read implementation loads the file before truncating output.
           // Reserve the full size before execution, including repeated reads,
           // to make the byte ceiling hard.
           if (reservedReadBytes + file.size > MAX_READ_BYTES) {
-            return deny("Repository read-byte budget exhausted")
+            return requestFinalResponse("Repository read-byte budget exhausted")
           }
           inspectedFiles.add(target)
           reservedReadBytes += file.size
