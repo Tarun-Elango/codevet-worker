@@ -1342,6 +1342,12 @@ const input = process.argv[2]
 const limit = Number(process.argv[3])
 const categoryLimit = Number(process.argv[4])
 const root = fs.realpathSync('.')
+// This runs in a separate Node process from the ranker, so it must define
+// its own category set for the cross-category proximity boost.
+const sensitiveSourceCategory = new Set([
+  'keyboard_input', 'microphone_access', 'clipboard_access',
+  'credential_handling', 'sensitive_system_access',
+])
 const candidates = []
 const seen = new Set()
 for (const line of fs.readFileSync(input, 'utf8').split('\\n')) {
