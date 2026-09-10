@@ -45,7 +45,7 @@ export const MAX_AGENT_LIST_RESULTS = 250;
 export const PI_AGENT_PACKAGE = '@earendil-works/pi-coding-agent';
 export const PI_AGENT_VERSION = '0.85.1';
 export const PI_AGENT_INTEGRITY = 'sha512-FGRN+OHbWaefBPGaTggAdLjrIHW+s2PzLyglz/5dfLzb9of7uuXMXYC0fJIeZTw+shS32o2cuQ9jF7YSDuL/oQ==';
-export const SCANNER_VERSION = `v9-pi-${PI_AGENT_VERSION}`;
+export const SCANNER_VERSION = `v10-pi-${PI_AGENT_VERSION}`;
 const LOW_CONFIDENCE_PATH_PATTERN = /(^|\/)(?:test|tests|__tests__|fixtures?|mocks?|docs?|examples?)\/|(?:^|\/)(?:README|CHANGELOG|LICENSE)(?:\.|$)|(?:_test\.go|\.(?:test|spec)\.[jt]sx?|\.md|\.lock|min\.js|\.map)$|(?:^|\/)node_modules\//i;
 const SOURCE_FILE_PATTERN = /\.(?:ts|tsx|js|jsx|mjs|cjs|py|go|rs|java|kt|kts|rb|php|c|h|cc|cpp|cxx|cs|swift|dart|lua|sh|bash|zsh|fish|ksh|dash|ps1|bat|cmd|html?|vue|svelte)$/i;
 // Build, deployment, and package-manager configuration can execute commands
@@ -632,6 +632,7 @@ async function runAgentAnalysis(sandbox, uid, scannerResult, agent) {
         CODEVET_AI_PROVIDER="$CODEVET_AI_PROVIDER" \\
         CODEVET_AI_MODEL="$CODEVET_AI_MODEL" \\
         CODEVET_AGENT_SYSTEM_PROMPT="$CODEVET_AGENT_SYSTEM_PROMPT" \\
+        CODEVET_AGENT_API_KEY="$CODEVET_AGENT_API_KEY" \\
         ${agent.piKeyEnv}="$CODEVET_AGENT_API_KEY" \\
         bash --noprofile --norc -c '
           cd /workspace/repo
@@ -647,9 +648,9 @@ async function runAgentAnalysis(sandbox, uid, scannerResult, agent) {
             exit 127
           fi
           if [ -n "$CODEVET_AI_MODEL" ]; then
-            exec "$PI_COMMAND" --print --no-session --offline --provider "$CODEVET_AI_PROVIDER" --model "$CODEVET_AI_MODEL" --tools read,find,ls --no-context-files --no-extensions -e /opt/codevet/repository-scope.js --no-skills --no-prompt-templates --no-approve --system-prompt "$CODEVET_AGENT_SYSTEM_PROMPT" -p "Perform the requested repository analysis."
+            exec "$PI_COMMAND" --print --no-session --offline --provider "$CODEVET_AI_PROVIDER" --model "$CODEVET_AI_MODEL" --api-key "$CODEVET_AGENT_API_KEY" --tools read,find,ls --no-context-files --no-extensions -e /opt/codevet/repository-scope.js --no-skills --no-prompt-templates --no-approve --system-prompt "$CODEVET_AGENT_SYSTEM_PROMPT" -p "Perform the requested repository analysis."
           fi
-          exec "$PI_COMMAND" --print --no-session --offline --provider "$CODEVET_AI_PROVIDER" --tools read,find,ls --no-context-files --no-extensions -e /opt/codevet/repository-scope.js --no-skills --no-prompt-templates --no-approve --system-prompt "$CODEVET_AGENT_SYSTEM_PROMPT" -p "Perform the requested repository analysis."
+          exec "$PI_COMMAND" --print --no-session --offline --provider "$CODEVET_AI_PROVIDER" --api-key "$CODEVET_AGENT_API_KEY" --tools read,find,ls --no-context-files --no-extensions -e /opt/codevet/repository-scope.js --no-skills --no-prompt-templates --no-approve --system-prompt "$CODEVET_AGENT_SYSTEM_PROMPT" -p "Perform the requested repository analysis."
         '
     `;
         // Stop streaming as soon as the model exceeds its response budget; do not
