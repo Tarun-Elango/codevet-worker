@@ -45,7 +45,7 @@ export const MAX_AGENT_LIST_RESULTS = 250;
 export const PI_AGENT_PACKAGE = '@earendil-works/pi-coding-agent';
 export const PI_AGENT_VERSION = '0.85.1';
 export const PI_AGENT_INTEGRITY = 'sha512-FGRN+OHbWaefBPGaTggAdLjrIHW+s2PzLyglz/5dfLzb9of7uuXMXYC0fJIeZTw+shS32o2cuQ9jF7YSDuL/oQ==';
-export const SCANNER_VERSION = `v7-pi-${PI_AGENT_VERSION}`;
+export const SCANNER_VERSION = `v8-pi-${PI_AGENT_VERSION}`;
 const LOW_CONFIDENCE_PATH_PATTERN = /(^|\/)(?:test|tests|__tests__|fixtures?|mocks?|docs?|examples?)\/|(?:^|\/)(?:README|CHANGELOG|LICENSE)(?:\.|$)|(?:_test\.go|\.(?:test|spec)\.[jt]sx?|\.md|\.lock|min\.js|\.map)$|(?:^|\/)node_modules\//i;
 const SOURCE_FILE_PATTERN = /\.(?:ts|tsx|js|jsx|mjs|cjs|py|go|rs|java|kt|kts|rb|php|c|h|cc|cpp|cxx|cs|swift|dart|lua|sh|bash|zsh|fish|ksh|dash|ps1|bat|cmd|html?|vue|svelte)$/i;
 // Build, deployment, and package-manager configuration can execute commands
@@ -385,9 +385,10 @@ export const scannerTemplate = Sandbox.template()
     # untrusted, so enforce repository containment and resource budgets in
     # trusted extension code, rather than relying on its system prompt. This
     # file is root-owned and is only loaded explicitly below; repository
-    # extensions remain disabled.
+    # extensions remain disabled. Keep it plain JavaScript so loading does not
+    # depend on Pi's TypeScript transform/parser in the sandbox image.
     install -d -m 0755 /opt/codevet
-    cat > /opt/codevet/repository-scope.ts <<'EOF'
+    cat > /opt/codevet/repository-scope.js <<'EOF'
     import { access, readFile, realpath, stat } from "node:fs/promises"
     import { constants } from "node:fs"
     import { createReadTool } from "@earendil-works/pi-coding-agent"
@@ -454,12 +455,12 @@ export const scannerTemplate = Sandbox.template()
       const repositoryRoot = await realpath(REPOSITORY_ROOT)
       const repositoryPrefix = repositoryRoot + sep
       const gitMetadataRoot = repositoryPrefix + ".git"
-      const inspectedFiles = new Set<string>()
+      const inspectedFiles = new Set()
       let toolCalls = 0
       let reservedReadBytes = 0
       let llmTurns = 0
 
-      async function repositoryTarget(value: unknown): Promise<string | undefined> {
+      async function repositoryTarget(value) {
         if (typeof value !== "string" || value.length === 0) return undefined
         try {
           const target = await realpath(resolve(REPOSITORY_ROOT, value))
@@ -477,7 +478,7 @@ export const scannerTemplate = Sandbox.template()
         return undefined
       }
 
-      function deny(reason: string) {
+      function deny(reason) {
         // A blocked call becomes an error result for the model. terminate
         // prevents a budget-exhausted batch from starting another LLM turn.
         return { block: true, reason, terminate: true }
@@ -506,7 +507,7 @@ export const scannerTemplate = Sandbox.template()
           return deny("Only repository inspection tools are permitted")
         }
 
-        const input = event.input as { path?: unknown; limit?: unknown }
+        const input = event.input
         const path = input.path
         // find and ls use the checkout as their documented default path.
         if (path === undefined && event.toolName !== "read") {
@@ -555,8 +556,8 @@ export const scannerTemplate = Sandbox.template()
       })
     }
     EOF
-    chown root:root /opt/codevet/repository-scope.ts
-    chmod 0644 /opt/codevet/repository-scope.ts
+    chown root:root /opt/codevet/repository-scope.js
+    chmod 0644 /opt/codevet/repository-scope.js
 
     # Do not rely on the scanner process PATH to find npm's global bin.
     # PI_BIN was resolved immediately after installing the pinned package,
@@ -646,9 +647,9 @@ async function runAgentAnalysis(sandbox, uid, scannerResult, agent) {
             exit 127
           fi
           if [ -n "$CODEVET_AI_MODEL" ]; then
-            exec "$PI_COMMAND" --print --no-session --offline --provider "$CODEVET_AI_PROVIDER" --model "$CODEVET_AI_MODEL" --tools read,find,ls --no-context-files --no-extensions -e /opt/codevet/repository-scope.ts --no-skills --no-prompt-templates --no-approve --system-prompt "$CODEVET_AGENT_SYSTEM_PROMPT" -p "Perform the requested repository analysis."
+            exec "$PI_COMMAND" --print --no-session --offline --provider "$CODEVET_AI_PROVIDER" --model "$CODEVET_AI_MODEL" --tools read,find,ls --no-context-files --no-extensions -e /opt/codevet/repository-scope.js --no-skills --no-prompt-templates --no-approve --system-prompt "$CODEVET_AGENT_SYSTEM_PROMPT" -p "Perform the requested repository analysis."
           fi
-          exec "$PI_COMMAND" --print --no-session --offline --provider "$CODEVET_AI_PROVIDER" --tools read,find,ls --no-context-files --no-extensions -e /opt/codevet/repository-scope.ts --no-skills --no-prompt-templates --no-approve --system-prompt "$CODEVET_AGENT_SYSTEM_PROMPT" -p "Perform the requested repository analysis."
+          exec "$PI_COMMAND" --print --no-session --offline --provider "$CODEVET_AI_PROVIDER" --tools read,find,ls --no-context-files --no-extensions -e /opt/codevet/repository-scope.js --no-skills --no-prompt-templates --no-approve --system-prompt "$CODEVET_AGENT_SYSTEM_PROMPT" -p "Perform the requested repository analysis."
         '
     `;
         // Stop streaming as soon as the model exceeds its response budget; do not
