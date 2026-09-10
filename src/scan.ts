@@ -215,6 +215,10 @@ const MAX_MANIFESTS = 100
 const MAX_SANDBOX_OUTPUT_BYTES = 32 * 1024 * 1024
 const SANDBOX_START_TIMEOUT_MS = 60_000
 const SANDBOX_STATUS_POLL_MS = 250
+// The create/status and exec services can briefly disagree during boot. A
+// rejected exec has not started a command when it reports this condition, so
+// retry only that specific pre-start error (never an unknown command failure).
+const SANDBOX_EXEC_START_RETRIES = 5
 function boundedPositiveIntegerEnv(name: string, fallback: number, maximum: number): number {
   const value = Number(process.env[name])
   return Number.isSafeInteger(value) && value > 0 && value <= maximum ? value : fallback
@@ -829,6 +833,31 @@ async function waitForSandboxRunning(
   throw new Error(`Sandbox did not start within ${SANDBOX_START_TIMEOUT_MS}ms`)
 }
 
+type ScannerSandbox = Awaited<ReturnType<typeof Sandbox.create>>
+
+type SandboxExecResult = Awaited<ReturnType<ScannerSandbox['exec']>>
+
+async function execScannerCommand(
+  sandbox: ScannerSandbox,
+  command: string,
+  timeoutSec: number
+): Promise<SandboxExecResult> {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return await sandbox.exec(command, { timeoutSec })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      const isBootRace = /Sandbox is not running \(status: CREATING\)/i.test(message)
+      if (!isBootRace || attempt >= SANDBOX_EXEC_START_RETRIES) throw error
+
+      // Do not retry arbitrary ExecInterruptedError instances: their command
+      // may have run. This branch is the backend's explicit pre-start status.
+      await new Promise<void>((resolve) => setTimeout(resolve, SANDBOX_STATUS_POLL_MS * 2 ** attempt))
+      await waitForSandboxRunning(sandbox)
+    }
+  }
+}
+
 /** Run Pi only after the deterministic protocol has been parsed. Its stdout is
  * never fed into parseScannerOutput, and its failure is non-fatal. */
 async function runAgentAnalysis(
@@ -963,7 +992,8 @@ export async function runScannerContainer(
     await waitForSandboxRunning(sandbox)
     console.log(`[${uid}] Sandbox running`)
 
-    const result = await sandbox.exec(
+    const result = await execScannerCommand(
+      sandbox,
       `
     # Start with an allowlisted environment so inherited Git, shell, proxy,
     # loader, and credential settings cannot affect the scan.
@@ -1420,9 +1450,7 @@ SELECT_AND_CONTEXT
         echo "CODEVET_DISCOVERY_END"
 SCAN_SCRIPT
   `,
-      {
-        timeoutSec: 120,
-      }
+      120
     )
 
     if (result.timedOut || result.truncated) {
