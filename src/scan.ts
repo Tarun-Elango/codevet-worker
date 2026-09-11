@@ -238,7 +238,7 @@ function boundedPositiveIntegerEnv(name: string, fallback: number, maximum: numb
 
 // These are execution limits, not model instructions. Environment settings may
 // reduce a limit but cannot raise the cost/safety ceilings.
-export const AGENT_TIMEOUT_SEC = boundedPositiveIntegerEnv('CODEVET_AI_TIMEOUT_SEC', 90, 90)
+export const AGENT_TIMEOUT_SEC = boundedPositiveIntegerEnv('CODEVET_AI_TIMEOUT_SEC', 300, 300)
 export const MAX_AGENT_OUTPUT_BYTES = boundedPositiveIntegerEnv('CODEVET_AI_MAX_OUTPUT_BYTES', 256 * 1024, 256 * 1024)
 // Keep the initial evidence compact; the agent can inspect relevant files with
 // its read-only tools instead of receiving a large, potentially stale dump.
@@ -246,11 +246,11 @@ export const MAX_AGENT_PROMPT_BYTES = 64 * 1024
 const MAX_AGENT_PROMPT_STRING_BYTES = 1_024
 export const MAX_AGENT_ITEMS = 50
 export const MAX_AGENT_STRING_LENGTH = 4_000
-export const MAX_AGENT_LLM_TURNS = 15
-export const MAX_AGENT_TOOL_CALLS = 20
-export const MIN_FILES_TO_INSPECT = 3
-export const MAX_AGENT_FILES = 20
-export const MAX_AGENT_READ_BYTES = 400 * 1024
+export const MAX_AGENT_LLM_TURNS = 18
+export const MAX_AGENT_TOOL_CALLS = 30
+export const MIN_FILES_TO_INSPECT = 2
+export const MAX_AGENT_FILES = 50
+export const MAX_AGENT_READ_BYTES = 512 * 1024
 export const MAX_AGENT_SINGLE_FILE_READ_BYTES = 50 * 1024
 export const MAX_AGENT_LIST_RESULTS = 250
 
