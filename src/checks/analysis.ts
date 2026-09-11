@@ -243,6 +243,11 @@ export const MAX_AGENT_TOOL_CALLS = 60
 export const MIN_FILES_TO_INSPECT = 2
 export const MAX_AGENT_FILES = 100
 export const MAX_AGENT_READ_BYTES = 1024 * 1024
+// The overall inspection ceiling is intentionally larger than the initial
+// context. Eagerly injecting the full ceiling can consume a model's context
+// window before it has a chance to produce a report, especially in monorepos.
+export const MAX_AGENT_PRELOADED_FILES = 24
+export const MAX_AGENT_PRELOADED_BYTES = 256 * 1024
 export const MAX_AGENT_SINGLE_FILE_READ_BYTES = 50 * 1024
 export const MAX_AGENT_LIST_RESULTS = 250
 
@@ -251,7 +256,7 @@ export const MAX_AGENT_LIST_RESULTS = 250
 export const PI_AGENT_PACKAGE = '@earendil-works/pi-coding-agent'
 export const PI_AGENT_VERSION = '0.85.1'
 export const PI_AGENT_INTEGRITY = 'sha512-FGRN+OHbWaefBPGaTggAdLjrIHW+s2PzLyglz/5dfLzb9of7uuXMXYC0fJIeZTw+shS32o2cuQ9jF7YSDuL/oQ=='
-export const SCANNER_VERSION = `v20-pi-${PI_AGENT_VERSION}`
+export const SCANNER_VERSION = `v21-pi-${PI_AGENT_VERSION}`
 
 const LOW_CONFIDENCE_PATH_PATTERN =
   /(^|\/)(?:test|tests|__tests__|fixtures?|mocks?|docs?|examples?)\/|(?:^|\/)(?:README|CHANGELOG|LICENSE)(?:\.|$)|(?:_test\.go|\.(?:test|spec)\.[jt]sx?|\.md|\.lock|min\.js|\.map)$|(?:^|\/)node_modules\//i
@@ -412,13 +417,18 @@ export function coverageForAgent(repositoryFiles: number, inspectedFiles: string
   }
 }
 
-export function emptyAgentAnalysis(status: 'failed' | 'timeout', repositoryFiles: number, error?: string): AgentAnalysis {
+export function emptyAgentAnalysis(
+  status: 'failed' | 'timeout',
+  repositoryFiles: number,
+  error?: string,
+  inspectedFiles: string[] = []
+): AgentAnalysis {
   return {
     status,
     verdict: 'inconclusive',
     summary: null,
     overallRisk: 'unknown',
-    coverage: coverageForAgent(repositoryFiles),
+    coverage: coverageForAgent(repositoryFiles, inspectedFiles),
     suspiciousBehaviors: [],
     securityIssues: [],
     externalServices: [],

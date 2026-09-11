@@ -1,5 +1,5 @@
 import { Sandbox } from 'railway';
-import { AGENT_SYSTEM_PROMPT, AGENT_TIMEOUT_SEC, MAX_AGENT_FILES, MAX_AGENT_LIST_RESULTS, MAX_AGENT_LLM_TURNS, MAX_AGENT_READ_BYTES, MAX_AGENT_SINGLE_FILE_READ_BYTES, MAX_AGENT_TOOL_CALLS, MAX_INVENTORY_FILES, MAX_MANIFESTS, MAX_SECRET_FINDINGS, MAX_AGENT_OUTPUT_BYTES, MIN_FILES_TO_INSPECT, PI_AGENT_INTEGRITY, PI_AGENT_PACKAGE, PI_AGENT_VERSION, SCANNER_TIMEOUT_SEC, buildAgentFilePriorities, buildAgentPrompt, coverageForAgent, emptyAgentAnalysis, parseAgentOutput, parseScannerOutput, redactSensitiveText, } from './analysis.js';
+import { AGENT_SYSTEM_PROMPT, AGENT_TIMEOUT_SEC, MAX_AGENT_FILES, MAX_AGENT_LIST_RESULTS, MAX_AGENT_LLM_TURNS, MAX_AGENT_READ_BYTES, MAX_AGENT_SINGLE_FILE_READ_BYTES, MAX_AGENT_TOOL_CALLS, MAX_INVENTORY_FILES, MAX_MANIFESTS, MAX_SECRET_FINDINGS, MAX_AGENT_OUTPUT_BYTES, MAX_AGENT_PRELOADED_BYTES, MAX_AGENT_PRELOADED_FILES, MIN_FILES_TO_INSPECT, PI_AGENT_INTEGRITY, PI_AGENT_PACKAGE, PI_AGENT_VERSION, SCANNER_TIMEOUT_SEC, buildAgentFilePriorities, buildAgentPrompt, coverageForAgent, emptyAgentAnalysis, parseAgentOutput, parseScannerOutput, redactSensitiveText, } from './analysis.js';
 // Sandbox lifecycle limits apply only to the isolated execution step.
 const SANDBOX_START_TIMEOUT_MS = 60_000;
 const SANDBOX_STATUS_POLL_MS = 250;
@@ -76,6 +76,8 @@ export const scannerTemplate = Sandbox.template()
     const MIN_FILES_TO_INSPECT = ${MIN_FILES_TO_INSPECT}
     const MAX_FILES = ${MAX_AGENT_FILES}
     const MAX_READ_BYTES = ${MAX_AGENT_READ_BYTES}
+    const MAX_PRELOADED_FILES = ${MAX_AGENT_PRELOADED_FILES}
+    const MAX_PRELOADED_BYTES = ${MAX_AGENT_PRELOADED_BYTES}
     const MAX_SINGLE_FILE_READ_BYTES = ${MAX_AGENT_SINGLE_FILE_READ_BYTES}
     const MAX_LIST_RESULTS = ${MAX_AGENT_LIST_RESULTS}
 
@@ -106,6 +108,7 @@ export const scannerTemplate = Sandbox.template()
 
     export default async function (pi) {
       let reportSubmitted = false
+      let reportToolActive = false
       // Use a terminating structured-output tool instead of relying on print
       // mode stdout. A final tool call otherwise legitimately leaves stdout
       // empty even though the agent completed successfully.
@@ -164,6 +167,7 @@ export const scannerTemplate = Sandbox.template()
       // while preserving the CLI-selected read-only tools.
       pi.on("session_start", () => {
         pi.setActiveTools([...new Set([...pi.getActiveTools(), "codevet_report"])])
+        reportToolActive = pi.getActiveTools().includes("codevet_report")
       })
 
       // Override Pi's built-in read tool rather than filtering its result:
@@ -278,7 +282,7 @@ export const scannerTemplate = Sandbox.template()
         const files = []
         const considered = new Set()
         for (const path of [...metadata, ...requested, ...fallback]) {
-          if (files.length >= MAX_FILES) break
+          if (files.length >= MAX_PRELOADED_FILES) break
           const target = await repositoryTarget(path)
           if (!target || considered.has(target)) continue
           considered.add(target)
@@ -289,7 +293,10 @@ export const scannerTemplate = Sandbox.template()
             continue
           }
           if (!file.isFile() || file.size > MAX_SINGLE_FILE_READ_BYTES) continue
-          if (reservedReadBytes + file.size > MAX_READ_BYTES) break
+          // Keep the initial provider request comfortably below typical model
+          // context windows. A file that does not fit must not prevent smaller
+          // high-priority files later in the list from being considered.
+          if (reservedReadBytes + file.size > MAX_PRELOADED_BYTES) continue
           let content
           try {
             content = redactSensitiveText(await readFile(target, "utf8"))
@@ -411,6 +418,8 @@ export const scannerTemplate = Sandbox.template()
             filesInspected: [...inspectedFiles],
             readBytes: reservedReadBytes,
             llmTurns,
+            reportToolActive,
+            reportSubmitted,
           })
         )
       })
@@ -564,6 +573,7 @@ export async function runAgentAnalysis(sandbox, uid, scannerResult, agent) {
             return emptyAgentAnalysis('failed', scannerResult.inventory.fileCount, 'Agent analysis failed');
         }
         let metricDiagnostics = 'metrics unavailable';
+        let inspectedFilesForFailure = [];
         try {
             const metricsRaw = await sandbox.files.read('/tmp/codevet-agent-metrics.json');
             const metrics = JSON.parse(metricsRaw);
@@ -582,6 +592,7 @@ export async function runAgentAnalysis(sandbox, uid, scannerResult, agent) {
                 }))];
             if (filesInspected.length > MAX_AGENT_FILES)
                 throw new Error('invalid inspected file count');
+            inspectedFilesForFailure = filesInspected;
             const preloadedFiles = typeof metrics.preloadedFiles === 'number'
                 ? metrics.preloadedFiles
                 : 0;
@@ -591,7 +602,11 @@ export async function runAgentAnalysis(sandbox, uid, scannerResult, agent) {
             const llmTurns = typeof metrics.llmTurns === 'number'
                 ? metrics.llmTurns
                 : 0;
-            metricDiagnostics = `preloaded=${preloadedFiles} inspected=${filesInspected.length} tools=${toolCalls} turns=${llmTurns}`;
+            const reportToolActive = metrics.reportToolActive === true;
+            const reportSubmitted = metrics.reportSubmitted === true;
+            metricDiagnostics =
+                `preloaded=${preloadedFiles} inspected=${filesInspected.length} ` +
+                    `tools=${toolCalls} turns=${llmTurns} reportTool=${reportToolActive} report=${reportSubmitted}`;
             let reportOutput = result.stdout;
             try {
                 reportOutput = await sandbox.files.read('/tmp/codevet-agent-report.json');
@@ -620,7 +635,7 @@ export async function runAgentAnalysis(sandbox, uid, scannerResult, agent) {
                     ? error.message
                     : 'unknown validation error';
             console.log(`[${uid}] AI analysis failed: invalid output (${reason.slice(0, 200)})`);
-            return emptyAgentAnalysis('failed', scannerResult.inventory.fileCount, 'Agent returned invalid structured output');
+            return emptyAgentAnalysis('failed', scannerResult.inventory.fileCount, 'Agent returned invalid structured output', inspectedFilesForFailure);
         }
     }
     catch {
