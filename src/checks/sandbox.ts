@@ -3,7 +3,8 @@ import { Sandbox } from 'railway'
 import {
   AGENT_SYSTEM_PROMPT,
   AGENT_TIMEOUT_SEC,
-  MAX_AGENT_FILES,
+  MAX_AGENT_GREP_OUTPUT_BYTES,
+  MAX_AGENT_GREP_RESULTS,
   MAX_AGENT_LIST_RESULTS,
   MAX_AGENT_LLM_TURNS,
   MAX_AGENT_READ_BYTES,
@@ -97,28 +98,30 @@ export const scannerTemplate = Sandbox.template()
     cat > /opt/codevet/repository-scope.js <<'EOF'
     import { access, readFile, readdir, realpath, stat, writeFile } from "node:fs/promises"
     import { constants } from "node:fs"
+    import { spawn } from "node:child_process"
     import { createReadTool } from "@earendil-works/pi-coding-agent"
     import { StringEnum } from "@earendil-works/pi-ai"
     import { Type } from "typebox"
     import { resolve, sep } from "node:path"
 
     const REPOSITORY_ROOT = "/workspace/repo"
-    // grep can return arbitrary source lines without passing through the read
-    // redactor, so it is deliberately unavailable to the model.
-    const SCOPED_TOOLS = new Set(["read", "find", "ls", "codevet_report"])
+    const SCOPED_TOOLS = new Set(["read", "grep", "find", "ls", "codevet_report"])
     // These files may be inventoried by name, but their contents must never
     // be exposed to the model/provider. Deterministic scanning handles them
-    // locally and emits metadata only.
-    const SENSITIVE_REPOSITORY_PATH = /(?:^|\\/)\\.env(?:\\.|$)|(?:^|\\/)(?:secrets?|credentials?)\\.(?:ya?ml|json|ini|conf)$|\\.(?:pem|key|p12|pfx)$/i
+    // locally and emits metadata only. Match path segments, not merely the
+    // requested spelling, after canonicalization.
+    const SENSITIVE_REPOSITORY_PATH = /(?:^|\\/)\\.env(?:\\.|$)|(?:^|\\/)(?:secrets?|credentials?|auth[_-]?credentials?|keystore|truststore)(?:\\/|$|\\.(?:ya?ml|json|ini|conf|config|toml|xml|properties|txt))|(?:^|\\/)id_(?:rsa|dsa|ecdsa|ed25519)(?:\\.pub)?$|\\.(?:pem|key|p8|p12|pfx|jks|keystore|crt|cer|der|p7b|p7c)$/i
+    const GENERATED_DIRECTORY = new Set(["node_modules", "vendor", "dist", "build", "target", "coverage", ".next", ".nuxt", "out", "bin", "obj", ".cache", "__pycache__", ".venv", "venv", "generated"])
     const MAX_LLM_TURNS = ${MAX_AGENT_LLM_TURNS}
     const MAX_TOOL_CALLS = ${MAX_AGENT_TOOL_CALLS}
     const MIN_FILES_TO_INSPECT = ${MIN_FILES_TO_INSPECT}
-    const MAX_FILES = ${MAX_AGENT_FILES}
     const MAX_READ_BYTES = ${MAX_AGENT_READ_BYTES}
     const MAX_PRELOADED_FILES = ${MAX_AGENT_PRELOADED_FILES}
     const MAX_PRELOADED_BYTES = ${MAX_AGENT_PRELOADED_BYTES}
     const MAX_SINGLE_FILE_READ_BYTES = ${MAX_AGENT_SINGLE_FILE_READ_BYTES}
     const MAX_LIST_RESULTS = ${MAX_AGENT_LIST_RESULTS}
+    const MAX_GREP_RESULTS = ${MAX_AGENT_GREP_RESULTS}
+    const MAX_GREP_OUTPUT_BYTES = ${MAX_AGENT_GREP_OUTPUT_BYTES}
 
     function secretLabel(key) {
       const normalized = key.replace(/([a-z])([A-Z])/g, "$1_$2").replace(/[^A-Za-z0-9]+/g, "_").toUpperCase()
@@ -244,12 +247,13 @@ export const scannerTemplate = Sandbox.template()
       async function repositoryTarget(value) {
         if (typeof value !== "string" || value.length === 0) return undefined
         try {
-          const target = await realpath(resolve(REPOSITORY_ROOT, value))
+          const target = await realpath(resolve(REPOSITORY_ROOT, value.replace(/^@/, "")))
+          const relative = target === repositoryRoot ? "" : target.slice(repositoryPrefix.length)
           if (
             (target === repositoryRoot || target.startsWith(repositoryPrefix)) &&
             target !== gitMetadataRoot &&
             !target.startsWith(gitMetadataRoot + sep) &&
-            !SENSITIVE_REPOSITORY_PATH.test(target.slice(repositoryPrefix.length))
+            !SENSITIVE_REPOSITORY_PATH.test(relative)
           ) {
             return target
           }
@@ -258,6 +262,110 @@ export const scannerTemplate = Sandbox.template()
         }
         return undefined
       }
+
+      function isGeneratedPath(target) {
+        if (target === repositoryRoot) return false
+        return target.slice(repositoryPrefix.length).split(sep).some((part) => GENERATED_DIRECTORY.has(part))
+      }
+
+      // A purpose-built grep is used instead of Pi's built-in implementation:
+      // every emitted filename is canonicalized, every line is redacted, and
+      // both result and byte ceilings are applied before text reaches the LLM.
+      pi.registerTool({
+        name: "grep",
+        label: "Safe repository grep",
+        description: "Search repository text with a ripgrep regex. Searches stay under /workspace/repo, skip sensitive files, .git, dependencies, and generated output, and return at most " + MAX_GREP_RESULTS + " redacted matches / " + MAX_GREP_OUTPUT_BYTES + " bytes.",
+        promptSnippet: "Search redacted repository source text with a bounded regex",
+        parameters: Type.Object({
+          pattern: Type.String({ description: "Ripgrep-compatible regular expression" }),
+          path: Type.Optional(Type.String({ description: "Repository file or directory (default: repository root)" })),
+          glob: Type.Optional(Type.String({ description: "Optional file glob such as *.ts" })),
+        }),
+        async execute(_toolCallId, params, signal) {
+          if (!params.pattern || Buffer.byteLength(params.pattern) > 500) throw new Error("grep pattern is empty or too large")
+          if (params.glob && Buffer.byteLength(params.glob) > 300) throw new Error("grep glob is too large")
+          const target = await repositoryTarget(params.path ?? REPOSITORY_ROOT)
+          if (!target) throw new Error("grep path is outside the readable repository scope")
+          if (isGeneratedPath(target)) throw new Error("grep excludes generated and dependency directories")
+          const targetStat = await stat(target)
+          if (!targetStat.isFile() && !targetStat.isDirectory()) throw new Error("grep requires a regular file or directory")
+
+          const args = [
+            "--json", "--hidden", "--no-ignore", "--max-filesize", String(MAX_SINGLE_FILE_READ_BYTES),
+            "--max-columns", "2000", "--max-count", "20",
+          ]
+          if (params.glob) args.push("--glob", params.glob)
+          args.push(
+            "--glob", "!**/.git/**",
+            "--glob", "!**/.env", "--glob", "!**/.env.*",
+            "--glob", "!**/*.{pem,key,p8,p12,pfx,jks,keystore,crt,cer,der,p7b,p7c}",
+            "--glob", "!**/{secret,secrets,credential,credentials,auth-credentials,auth_credentials,keystore,truststore}",
+            "--glob", "!**/{secret,secrets,credential,credentials,auth-credentials,auth_credentials,keystore,truststore}/**",
+            "--glob", "!**/{secret,secrets,credential,credentials,auth-credentials,auth_credentials,keystore,truststore}.{yml,yaml,json,ini,conf,config,toml,xml,properties,txt}",
+          )
+          for (const directory of GENERATED_DIRECTORY) args.push("--glob", "!**/" + directory + "/**")
+          args.push("--", params.pattern, target)
+
+          const child = spawn("rg", args, { cwd: repositoryRoot, stdio: ["ignore", "pipe", "pipe"] })
+          let stdout = ""
+          let stderr = ""
+          let processBytes = 0
+          let killedForLimit = false
+          const stopIfNeeded = (chunk) => {
+            processBytes += chunk.length
+            if (processBytes > MAX_GREP_OUTPUT_BYTES * 8) {
+              killedForLimit = true
+              child.kill("SIGKILL")
+            }
+          }
+          child.stdout.on("data", (chunk) => {
+            if (!killedForLimit) stdout += chunk.toString("utf8")
+            stopIfNeeded(chunk)
+          })
+          child.stderr.on("data", (chunk) => {
+            if (Buffer.byteLength(stderr) < 2_000) stderr += chunk.toString("utf8")
+            stopIfNeeded(chunk)
+          })
+          const abort = () => child.kill("SIGKILL")
+          signal?.addEventListener("abort", abort, { once: true })
+          const code = await new Promise((resolveCode, reject) => {
+            child.once("error", reject)
+            child.once("close", resolveCode)
+          }).finally(() => signal?.removeEventListener("abort", abort))
+          if (signal?.aborted) throw new Error("grep cancelled")
+          if (code !== 0 && code !== 1 && !killedForLimit) throw new Error("grep failed: " + redactSensitiveText(stderr).slice(0, 500))
+
+          const matches = []
+          let outputBytes = 0
+          let resultLimited = killedForLimit
+          for (const line of stdout.split("\\n")) {
+            let event
+            try { event = JSON.parse(line) } catch { continue }
+            if (event.type !== "match") continue
+            const rawPath = event.data?.path?.text
+            const lineNumber = event.data?.line_number
+            const rawText = event.data?.lines?.text
+            if (typeof rawPath !== "string" || !Number.isInteger(lineNumber) || typeof rawText !== "string") continue
+            const matchedFile = await repositoryTarget(rawPath)
+            if (!matchedFile) continue
+            const matchedStat = await stat(matchedFile).catch(() => undefined)
+            if (!matchedStat?.isFile() || matchedStat.size > MAX_SINGLE_FILE_READ_BYTES || isGeneratedPath(matchedFile)) continue
+            const relative = matchedFile.slice(repositoryPrefix.length).replace(/[\\x00-\\x1f\\x7f]/g, "?")
+            const text = redactSensitiveText(rawText.replace(/[\\r\\n]+$/, ""))
+            const rendered = relative + ":" + lineNumber + ":" + text + "\\n"
+            const bytes = Buffer.byteLength(rendered)
+            if (matches.length >= MAX_GREP_RESULTS || outputBytes + bytes > MAX_GREP_OUTPUT_BYTES) {
+              resultLimited = true
+              break
+            }
+            matches.push(rendered)
+            outputBytes += bytes
+            inspectedFiles.add(matchedFile)
+          }
+          const text = matches.length ? matches.join("") + (resultLimited ? "[grep results truncated]\\n" : "") : "No matches found."
+          return { content: [{ type: "text", text }], details: { matchCount: matches.length, truncated: resultLimited } }
+        },
+      })
 
       function requestFinalResponse(reason) {
         // The prohibited tool never executes. Reserve the next provider turn
@@ -272,7 +380,7 @@ export const scannerTemplate = Sandbox.template()
       }
 
       async function fallbackFiles(directory, output) {
-        if (output.length >= MAX_FILES * 4) return
+        if (output.length >= MAX_PRELOADED_FILES * 4) return
         let entries
         try {
           entries = await readdir(directory, { withFileTypes: true })
@@ -281,8 +389,8 @@ export const scannerTemplate = Sandbox.template()
         }
         entries.sort((a, b) => a.name.localeCompare(b.name))
         for (const entry of entries) {
-          if (output.length >= MAX_FILES * 4) return
-          if ([".git", "node_modules", "vendor", "dist", "build", "target", ".next"].includes(entry.name)) continue
+          if (output.length >= MAX_PRELOADED_FILES * 4) return
+          if (entry.name === ".git" || GENERATED_DIRECTORY.has(entry.name)) continue
           const path = resolve(directory, entry.name)
           if (entry.isDirectory()) {
             await fallbackFiles(path, output)
@@ -399,11 +507,22 @@ export const scannerTemplate = Sandbox.template()
 
         const input = event.input
         const path = input.path
-        // find and ls use the checkout as their documented default path.
+        // Reserve a grep call's maximum returned bytes during sequential
+        // preflight. Pi may execute sibling tool calls concurrently, so
+        // charging after execution could race past the aggregate ceiling.
+        if (event.toolName === "grep") {
+          if (reservedReadBytes + MAX_GREP_OUTPUT_BYTES > MAX_READ_BYTES) {
+            return requestFinalResponse("Repository grep-byte budget exhausted")
+          }
+          reservedReadBytes += MAX_GREP_OUTPUT_BYTES
+        }
+        // grep, find, and ls use the checkout as their documented default.
         if (path === undefined && event.toolName !== "read") {
-          input.limit = typeof input.limit === "number"
-            ? Math.min(input.limit, MAX_LIST_RESULTS)
-            : MAX_LIST_RESULTS
+          if (event.toolName !== "grep") {
+            input.limit = typeof input.limit === "number"
+              ? Math.min(input.limit, MAX_LIST_RESULTS)
+              : MAX_LIST_RESULTS
+          }
           return undefined
         }
 
@@ -425,9 +544,8 @@ export const scannerTemplate = Sandbox.template()
           if (file.size > MAX_SINGLE_FILE_READ_BYTES) {
             return requestFinalResponse("Single-file read budget exceeded")
           }
-          if (!inspectedFiles.has(target) && inspectedFiles.size >= MAX_FILES) {
-            return requestFinalResponse("Unique-file inspection budget exhausted")
-          }
+          // Relevance is model-selected rather than constrained to a fixed
+          // file sample. The aggregate byte and call limits remain hard.
           // Pi's read implementation loads the file before truncating output.
           // Reserve the full size before execution, including repeated reads,
           // to make the byte ceiling hard.
@@ -439,10 +557,41 @@ export const scannerTemplate = Sandbox.template()
           return undefined
         }
 
-        input.limit = typeof input.limit === "number"
-          ? Math.min(input.limit, MAX_LIST_RESULTS)
-          : MAX_LIST_RESULTS
+        if (event.toolName !== "grep") {
+          input.limit = typeof input.limit === "number"
+            ? Math.min(input.limit, MAX_LIST_RESULTS)
+            : MAX_LIST_RESULTS
+        }
         return undefined
+      })
+
+      pi.on("tool_result", (event) => {
+        if (event.toolName !== "find" && event.toolName !== "ls") return undefined
+        let remaining = Math.max(0, MAX_READ_BYTES - reservedReadBytes)
+        let visibleBytes = 0
+        const content = event.content.map((item) => {
+          if (item.type !== "text") return item
+          if (remaining === 0) return { ...item, text: "" }
+          const bytes = Buffer.from(item.text, "utf8")
+          if (bytes.length <= remaining) {
+            remaining -= bytes.length
+            visibleBytes += bytes.length
+            return item
+          }
+          // Decode only a complete UTF-8 prefix. Replacement characters can
+          // otherwise make the supposedly truncated result exceed its budget.
+          let length = remaining
+          let text = bytes.subarray(0, length).toString("utf8")
+          while (Buffer.byteLength(text) > remaining && length > 0) {
+            length -= 1
+            text = bytes.subarray(0, length).toString("utf8")
+          }
+          visibleBytes += Buffer.byteLength(text)
+          remaining = 0
+          return { ...item, text }
+        })
+        reservedReadBytes += visibleBytes
+        return { content }
       })
 
       pi.on("agent_end", async () => {
@@ -584,9 +733,9 @@ export async function runAgentAnalysis(
             exit 127
           fi
           if [ -n "$CODEVET_AI_MODEL" ]; then
-            exec "$PI_COMMAND" --print --no-session --offline --provider "$CODEVET_AI_PROVIDER" --model "$CODEVET_AI_MODEL" --api-key "$CODEVET_AGENT_API_KEY" --tools read,find,ls,codevet_report --no-context-files --no-extensions -e /opt/codevet/repository-scope.js --no-skills --no-prompt-templates --no-approve --system-prompt "$CODEVET_AGENT_SYSTEM_PROMPT" -p "Perform the requested repository analysis."
+            exec "$PI_COMMAND" --print --no-session --offline --provider "$CODEVET_AI_PROVIDER" --model "$CODEVET_AI_MODEL" --api-key "$CODEVET_AGENT_API_KEY" --tools read,grep,find,ls,codevet_report --no-context-files --no-extensions -e /opt/codevet/repository-scope.js --no-skills --no-prompt-templates --no-approve --system-prompt "$CODEVET_AGENT_SYSTEM_PROMPT" -p "Perform the requested repository analysis."
           fi
-          exec "$PI_COMMAND" --print --no-session --offline --provider "$CODEVET_AI_PROVIDER" --api-key "$CODEVET_AGENT_API_KEY" --tools read,find,ls,codevet_report --no-context-files --no-extensions -e /opt/codevet/repository-scope.js --no-skills --no-prompt-templates --no-approve --system-prompt "$CODEVET_AGENT_SYSTEM_PROMPT" -p "Perform the requested repository analysis."
+          exec "$PI_COMMAND" --print --no-session --offline --provider "$CODEVET_AI_PROVIDER" --api-key "$CODEVET_AGENT_API_KEY" --tools read,grep,find,ls,codevet_report --no-context-files --no-extensions -e /opt/codevet/repository-scope.js --no-skills --no-prompt-templates --no-approve --system-prompt "$CODEVET_AGENT_SYSTEM_PROMPT" -p "Perform the requested repository analysis."
         '
     `
     // Stop streaming as soon as the model exceeds its response budget; do not
@@ -656,7 +805,6 @@ export async function runAgentAnalysis(
         if (!file.startsWith(prefix)) throw new Error('invalid inspected file path')
         return file.slice(prefix.length)
       }))]
-      if (filesInspected.length > MAX_AGENT_FILES) throw new Error('invalid inspected file count')
       inspectedFilesForFailure = filesInspected
       const preloadedFiles =
         typeof (metrics as { preloadedFiles?: unknown }).preloadedFiles === 'number'
@@ -675,13 +823,10 @@ export async function runAgentAnalysis(
       metricDiagnostics =
         `preloaded=${preloadedFiles} inspected=${filesInspected.length} ` +
         `tools=${toolCalls} turns=${llmTurns} reportTool=${reportToolActive} report=${reportSubmitted}`
-      let reportOutput = result.stdout
-      try {
-        reportOutput = await sandbox.files.read('/tmp/codevet-agent-report.json')
-      } catch {
-        // Backward-compatible fallback for a model that printed JSON instead
-        // of using the structured report tool.
+      if (!reportToolActive || !reportSubmitted) {
+        throw new Error('required CodeVet report was not submitted')
       }
+      const reportOutput = await sandbox.files.read('/tmp/codevet-agent-report.json')
       const analysis = parseAgentOutput(
         reportOutput,
         coverageForAgent(scannerResult.inventory.fileCount, filesInspected)

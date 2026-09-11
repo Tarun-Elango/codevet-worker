@@ -129,11 +129,11 @@ Pi runs only after the deterministic protocol has been parsed, so Pi output cann
 flowchart TD
   DR["Deterministic ScannerResult"] --> BP["Build capped prompt\nsecret presence omitted"]
   BP --> PP["Root-only temporary prompt file"]
-  PP --> P["Pi as scanner user\n--tools read,find,ls"]
+  PP --> P["Pi as scanner user\n--tools read,grep,find,ls"]
   P --> G["Trusted repository-scope extension"]
-  G -->|"allowed"| R["Existing paths below /workspace/repo\nread / find / ls only"]
+  G -->|"allowed"| R["Existing paths below /workspace/repo\nread / safe grep / find / ls only"]
   G -->|"denied"| D["Secrets, .git, escaping symlinks, images,\nother tools, and exceeded budgets"]
-  R --> RED["Redact text before it reaches model"]
+  R --> RED["Redact source and grep matches\nbefore they reach the model"]
   RED --> L["Provider/model"]
   L --> J["JSON-only result"]
   J --> V["Strict schema, size, and field validation"]
@@ -142,13 +142,13 @@ flowchart TD
 
 Pi's tool extension enforces, rather than merely requests:
 
-- only `read`, `find`, and `ls`; no repository extensions, skills, prompt templates, approval, or context files;
-- containment in `/workspace/repo`, existing targets only, and no `.git`, secret/config/key files, escaping symlinks, or images;
-- redaction before repository text is returned to the model/provider;
-- at most 15 LLM turns, 20 tool calls, 20 unique files, 400 KB total reads, 50 KB per file, and 250 list results;
-- a 90-second process timeout and 256 KB combined output limit.
+- only `read`, safe `grep`, `find`, and `ls`; no repository extensions, skills, prompt templates, approval, or context files;
+- containment in `/workspace/repo`, existing targets only, and no `.git`, secret/config/key/certificate files, escaping symlinks, or images;
+- a custom grep implementation that canonicalizes every result path, redacts every match, skips generated/dependency directories, and caps both matches and returned bytes;
+- at most 24 LLM turns, 60 tool calls, 1 MB of model-visible repository content, 50 KB per file, and 250 list results; grep additionally returns at most 200 matches / 32 KB per call;
+- a 300-second process timeout and 256 KB combined output limit.
 
-The model receives capped deterministic evidence (at most 64 KB) plus only tool-readable, redacted repository text. Its stdout must be a bounded JSON object with repository context, behaviors, issues, services, and notes. Invalid, failed, timed-out, or oversized model output becomes a non-fatal `agentAnalysis` with `failed` or `timeout` status; deterministic results remain available.
+The model receives capped deterministic findings and repository metadata (at most 64 KB), plus at most eight small, high-priority metadata/entrypoint/source files (at most 128 KB). These files are only an initial lead set, not a fixed sample or coverage boundary. Pi can traverse the full non-sensitive checkout and dynamically choose further files by following imports and data flows; aggregate byte, call, turn, file-size, and execution limits still apply. The final result must be submitted through the terminating `codevet_report` tool and is rejected if that tool was not used. Invalid, failed, timed-out, or oversized model output becomes a non-fatal `agentAnalysis` with `failed` or `timeout` status; deterministic results remain available.
 
 ## What `runScannerContainer` provides
 
