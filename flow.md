@@ -82,7 +82,7 @@ It never emits the secret value or sensitive-file contents. The HMAC key is gene
 - credential handling;
 - tracking/telemetry.
 
-Discovery excludes `.git`, dependencies/build output, `.env*`, and conventional secret/key files. It also limits scanned files to 1 MB and retains the best 80 match-only leads per category. Matches are scored to prefer concrete APIs, source expressions, entrypoints, and non-test source files.
+Discovery excludes `.git`, dependencies/build output, `.env*`, and conventional secret/key files. It scans text files up to 5 MB and retains bounded, ranked leads per category. Matches are scored to prefer concrete APIs, source expressions, entrypoints, and non-test source files. Dedicated security and supply-chain categories cover likely injection, traversal, unsafe deserialization/JWT/crypto/CORS, install hooks, risky workflows, download-and-execute behavior, reverse shells, obfuscation, persistence, mining, and destructive commands.
 
 The scanner then selects at most 250 total candidates and at most 40 per category. Only those selected regular files (up to 1 MB) are read for context, and it emits selected match lines plus up to ±25 lines, with each line capped at 500 characters.
 
@@ -119,7 +119,7 @@ Important interpretation rules:
 - API presence is normally behavior evidence, **not** a vulnerability.
 - Process execution becomes a high-severity finding only when a likely user-controlled value is passed to a shell/dynamic-code interpreter.
 - Credential input is normal behavior; a finding requires a sensitive logging call.
-- A `candidateFlow` is explicitly a **possible** flow. Current correlation is only `same_file` (score `0.6`); it does not prove data transfer.
+- A `candidateFlow` is explicitly a **possible** flow. Correlation uses same-file evidence plus direct and short transitive import relationships between selected evidence files; it does not prove data transfer.
 
 ## Optional Pi analysis in the same sandbox
 
@@ -145,10 +145,10 @@ Pi's tool extension enforces, rather than merely requests:
 - only `read`, safe `grep`, `find`, and `ls`; no repository extensions, skills, prompt templates, approval, or context files;
 - containment in `/workspace/repo`, existing targets only, and no `.git`, secret/config/key/certificate files, escaping symlinks, or images;
 - a custom grep implementation that canonicalizes every result path, redacts every match, skips generated/dependency directories, and caps both matches and returned bytes;
-- at most 24 LLM turns, 60 tool calls, 1 MB of model-visible repository content, 50 KB per file, and 250 list results; grep additionally returns at most 200 matches / 32 KB per call;
+- at most 30 LLM turns, 80 tool calls, 4 MB of model-visible repository content, 200 KB per file, and 250 list results; grep additionally returns at most 200 matches / 32 KB per call;
 - a 300-second process timeout and 256 KB combined output limit.
 
-The model receives capped deterministic findings and repository metadata (at most 64 KB), plus at most eight small, high-priority metadata/entrypoint/source files (at most 128 KB). These files are only an initial lead set, not a fixed sample or coverage boundary. Pi can traverse the full non-sensitive checkout and dynamically choose further files by following imports and data flows; aggregate byte, call, turn, file-size, and execution limits still apply. The final result must be submitted through the terminating `codevet_report` tool and is rejected if that tool was not used. Invalid, failed, timed-out, or oversized model output becomes a non-fatal `agentAnalysis` with `failed` or `timeout` status; deterministic results remain available.
+The model receives capped deterministic findings and repository metadata (at most 64 KB), plus at most eight small, high-priority metadata/entrypoint/source files (at most 256 KB). These files are only an initial lead set, not a fixed sample or coverage boundary. Pi can traverse the full non-sensitive checkout and dynamically choose further files by following imports and data flows; aggregate byte, call, turn, file-size, and execution limits still apply. The final result must be submitted through the terminating `codevet_report` tool and is rejected if that tool was not used. Invalid, failed, timed-out, or oversized model output becomes a non-fatal `agentAnalysis` with `failed` or `timeout` status; deterministic results remain available.
 
 ## What `runScannerContainer` provides
 
@@ -163,7 +163,8 @@ The returned `ScannerResult` contains:
 | `securityFindings` / `findings` | Committed-secret metadata findings plus conservative static security findings. |
 | `behaviors` | Capability evidence with `risk: 'unknown'`. |
 | `networkCalls` | Network evidence, including a literal destination when one can be extracted. |
-| `candidateFlows` | Same-file, possible sensitive-source → network-sink correlations. |
+| `candidateFlows` | Structurally correlated, possible sensitive-source → network-sink relationships. |
+| `imports` | Local import edges between selected evidence files used for cross-file correlation. |
 | `snippets` | Bounded, sanitized context around meaningful evidence. |
 | `agentAnalysis` | Validated optional Pi result, `null` when no AI credential is configured. |
 

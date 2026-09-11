@@ -29,16 +29,16 @@ export const MAX_AGENT_PROMPT_BYTES = 64 * 1024;
 const MAX_AGENT_PROMPT_STRING_BYTES = 1_024;
 export const MAX_AGENT_ITEMS = 50;
 export const MAX_AGENT_STRING_LENGTH = 4_000;
-export const MAX_AGENT_LLM_TURNS = 24;
-export const MAX_AGENT_TOOL_CALLS = 60;
+export const MAX_AGENT_LLM_TURNS = 30;
+export const MAX_AGENT_TOOL_CALLS = 80;
 export const MIN_FILES_TO_INSPECT = 2;
-export const MAX_AGENT_READ_BYTES = 1024 * 1024;
+export const MAX_AGENT_READ_BYTES = 4 * 1024 * 1024;
 // Give the agent only a compact starting point. This is not a repository
 // sample: after seeing these high-priority files it chooses further files by
 // traversing imports and data flows with the scoped inspection tools.
 export const MAX_AGENT_PRELOADED_FILES = 8;
-export const MAX_AGENT_PRELOADED_BYTES = 128 * 1024;
-export const MAX_AGENT_SINGLE_FILE_READ_BYTES = 50 * 1024;
+export const MAX_AGENT_PRELOADED_BYTES = 256 * 1024;
+export const MAX_AGENT_SINGLE_FILE_READ_BYTES = 200 * 1024;
 export const MAX_AGENT_LIST_RESULTS = 250;
 export const MAX_AGENT_GREP_RESULTS = 200;
 export const MAX_AGENT_GREP_OUTPUT_BYTES = 32 * 1024;
@@ -47,9 +47,9 @@ export const MAX_AGENT_GREP_OUTPUT_BYTES = 32 * 1024;
 export const PI_AGENT_PACKAGE = '@earendil-works/pi-coding-agent';
 export const PI_AGENT_VERSION = '0.85.1';
 export const PI_AGENT_INTEGRITY = 'sha512-FGRN+OHbWaefBPGaTggAdLjrIHW+s2PzLyglz/5dfLzb9of7uuXMXYC0fJIeZTw+shS32o2cuQ9jF7YSDuL/oQ==';
-export const SCANNER_VERSION = `v22-pi-${PI_AGENT_VERSION}`;
+export const SCANNER_VERSION = `v23-pi-${PI_AGENT_VERSION}`;
 const LOW_CONFIDENCE_PATH_PATTERN = /(^|\/)(?:test|tests|__tests__|fixtures?|mocks?|docs?|examples?)\/|(?:^|\/)(?:README|CHANGELOG|LICENSE)(?:\.|$)|(?:_test\.go|\.(?:test|spec)\.[jt]sx?|\.md|\.lock|min\.js|\.map)$|(?:^|\/)node_modules\//i;
-const SOURCE_FILE_PATTERN = /\.(?:ts|tsx|js|jsx|mjs|cjs|py|go|rs|java|kt|kts|rb|php|c|h|cc|cpp|cxx|cs|swift|dart|lua|sh|bash|zsh|fish|ksh|dash|ps1|bat|cmd|html?|vue|svelte)$/i;
+const SOURCE_FILE_PATTERN = /\.(?:ts|tsx|js|jsx|mjs|cjs|py|go|rs|java|kt|kts|scala|sc|rb|php|ex|exs|erl|hrl|r|rmd|sol|move|c|h|cc|cpp|cxx|cs|swift|dart|lua|sh|bash|zsh|fish|ksh|dash|ps1|bat|cmd|html?|vue|svelte|ipynb)$/i;
 // Build, deployment, and package-manager configuration can execute commands
 // or define privileged behavior just as directly as application code.
 const ANALYZABLE_CONFIGURATION_FILE_PATTERN = /(?:^|\/)(?:package\.json|Dockerfile[^/]*|docker-compose[^/]*|Makefile)$|\.(?:ya?ml|toml|xml|gradle|properties|tf|tfvars)$/i;
@@ -61,6 +61,26 @@ const NETWORK_CALL_PATTERN = /\b(?:fetch|axios|got|request|http|https|grpc|reque
 const PROCESS_EXECUTION_PATTERN = /\b(?:exec|execFile|spawn|fork)\s*\(|\bchild_process\s*\.|\bsubprocess\.(?:run|Popen|call)\s*\(|\bos\.system\s*\(|\beval\s*\(|new\s+Function\s*\(/i;
 const SENSITIVE_LOGGING_PATTERN = /(?:console|logger|log)\s*\.\s*(?:log|info|debug|warn|error)\s*\([^)]*\b(?:password|passwd|credential|token|api[_-]?key|secret|private[_-]?key)s?\b/i;
 const CREDENTIAL_COLLECTION_PATTERN = /\b(?:password|passwd|credential)s?\b[^\n]{0,100}(?:\.value\b|querySelector|FormData|request|body|params|localStorage|sessionStorage)|(?:querySelector|input|form)[^\n]{0,80}(?:password|passwd|credential)/i;
+// High-signal deterministic rules. These deliberately require both a dangerous
+// sink/configuration and attacker-controlled or clearly unsafe input on the
+// same statement or in the small local context. They are triage rules, not a
+// replacement for a language-aware analyzer.
+const SQL_SINK_PATTERN = /\b(?:query|execute|raw|execSQL|createQuery)\s*\(/i;
+const HTML_SINK_PATTERN = /(?:\.innerHTML\s*=|outerHTML\s*=|document\.write\s*\(|dangerouslySetInnerHTML|\bv-html\s*=)/i;
+const FILE_SINK_PATTERN = /\b(?:readFile|writeFile|createReadStream|createWriteStream|open|sendFile|download|unlink|rm|rmdir)\s*\(|\b(?:fs|path)\.(?:read|write|open|resolve|join|unlink|rm)|\bopen\s*\(/i;
+const DESERIALIZATION_SINK_PATTERN = /\b(?:pickle\.loads?|yaml\.load|unserialize|ObjectInputStream|BinaryFormatter|Marshal\.load)\s*\(/i;
+const UNSAFE_JWT_PATTERN = /\b(?:jwt\.)?decode\s*\([^\n)]*\)(?![^\n]*(?:verify|signature))|algorithms?\s*[:=]\s*[\["']*none\b|verify_signature["']?\s*[:=]\s*false/i;
+const WEAK_CRYPTO_PATTERN = /\b(?:md5|sha1)\s*\([^\n]*(?:password|passwd|credential|token)|createHash\s*\(\s*['"](?:md5|sha1)['"]|\bECB\b|DES\/ECB/i;
+const UNSAFE_CORS_PATTERN = /(?:origin\s*:\s*['"]\*['"][^\n]{0,200}credentials\s*:\s*true|Access-Control-Allow-Origin[^\n]*\*)/i;
+const TEMPLATE_OR_CONCAT_PATTERN = /(?:`[^`]*\$\{|\+\s*(?:req|request|ctx|params|query|body|user|input)|(?:req|request|ctx)\.(?:body|query|params))/i;
+const INSTALL_HOOK_PATTERN = /["'](?:preinstall|install|postinstall|prepare)["']\s*:/i;
+const DOWNLOAD_EXEC_PATTERN = /(?:curl|wget|Invoke-WebRequest|fetch\s*\()[^\n]{0,300}(?:\|\s*(?:sh|bash)|chmod\s+\+x|\.\/|exec|spawn|powershell)/i;
+const REVERSE_SHELL_PATTERN = /(?:\/dev\/tcp\/|nc\s+(?:-[^\s]+\s+)*[^\n]*\s-e\s|bash\s+-i|socket[^\n]{0,160}dup2|powershell[^\n]{0,200}(?:TcpClient|DownloadString))/i;
+const OBFUSCATED_EXEC_PATTERN = /(?:eval|Function|exec|powershell)\s*\([^\n]{0,100}(?:atob|fromCharCode|base64|b64decode|FromBase64String)|(?:atob|b64decode|FromBase64String)\s*\([^\n]{0,100}\)(?:[^\n]{0,80})(?:eval|exec)/i;
+const PERSISTENCE_PATTERN = /(?:crontab|\/etc\/cron|systemctl\s+enable|launchctl\s+load|LaunchAgents|CurrentVersion\\Run|schtasks\s+\/create)/i;
+const CRYPTOMINING_PATTERN = /(?:stratum\+tcp|xmrig|cryptonight|monero|coinhive|minerd\b)/i;
+const DESTRUCTIVE_COMMAND_PATTERN = /(?:rm\s+-rf\s+(?:\/|~|\$HOME)|del\s+\/s\s+\/q|Remove-Item[^\n]*-Recurse[^\n]*-Force|mkfs\.|dd\s+if=.*\s+of=\/dev\/)/i;
+const UNSAFE_WORKFLOW_PATTERN = /(?:permissions\s*:\s*write-all|pull_request_target|\$\{\{\s*github\.event\.(?:issue|pull_request|comment|review)[^}]*\}\})/i;
 // These patterns deliberately require evidence that an interpreter is given
 // an untrusted value. A process API alone is ordinary CLI/application behavior.
 const USER_CONTROLLED_VALUE_PATTERN = /\b(?:user(?:Input|Controlled(?:String|Command)?|Supplied|Provided|Data)?|input|untrusted(?:Input|Data)?|payload)\b|\b(?:req|request)\s*\.\s*(?:body|query|params)\b|\b(?:ctx|context)\s*\.\s*(?:request\s*\.\s*)?(?:body|query|params)\b|\bprocess\s*\.\s*argv\b|\b(?:event|message)\s*\.\s*data\b/i;
@@ -589,6 +609,15 @@ function isLikelyUserControlledValue(expression, context) {
 /** Return true only for shell/dynamic-code interpreters fed a likely
  * user-controlled value. `spawn("git", ["status"])` intentionally does not
  * satisfy either branch. */
+function hasLikelyUserControlledNetworkDestination(context) {
+    const calls = /\b(?:fetch|request|axios\.(?:get|post|put|delete|request)|requests?\.(?:get|post|put|delete|request)|httpx\.(?:get|post|request)|urllib\.request\.urlopen)\s*\(\s*([^,)\n]+)/gi;
+    for (const call of context.matchAll(calls)) {
+        const expression = call[1].trim();
+        if (!/^['"`]https?:\/\//i.test(expression) && isLikelyUserControlledValue(expression, context))
+            return true;
+    }
+    return false;
+}
 function hasUnsafeDynamicExecution(context) {
     const dynamicCalls = /\b(?:exec|eval|Function|system)\s*\(\s*([^,)\n]+)/gi;
     for (const call of context.matchAll(dynamicCalls)) {
@@ -670,6 +699,13 @@ function analyzeCandidates(candidates, linesByFile) {
             case 'external_http':
                 if (NETWORK_CALL_PATTERN.test(codeForAnalysis)) {
                     addNetworkCall(networkCalls, candidate, codeForAnalysis);
+                    if (hasLikelyUserControlledNetworkDestination(codeForAnalysis) && !extractDestination(candidate.code)) {
+                        addFinding(securityFindings, candidate, {
+                            ruleId: 'likely-ssrf', category: 'server_side_request_forgery', title: 'Potential server-side request forgery',
+                            severity: 'high', confidence: 'medium',
+                            reason: 'An outbound request destination appears to come directly from likely user-controlled input.',
+                        });
+                    }
                 }
                 break;
             case 'process_execution':
@@ -703,15 +739,43 @@ function analyzeCandidates(candidates, linesByFile) {
                 // to an unrelated password field in the same function.
                 if (SENSITIVE_LOGGING_PATTERN.test(candidate.code)) {
                     addFinding(securityFindings, candidate, {
-                        ruleId: 'sensitive-logging',
-                        category: 'sensitive_logging',
-                        title: 'Potential sensitive data logged',
-                        severity: 'high',
-                        confidence: 'high',
+                        ruleId: 'sensitive-logging', category: 'sensitive_logging', title: 'Potential sensitive data logged',
+                        severity: 'high', confidence: 'high',
                         reason: 'A logging call appears to include a password, token, secret, or credential value.',
                     });
                 }
                 break;
+            case 'security_signal': {
+                const userControlled = USER_CONTROLLED_VALUE_PATTERN.test(codeForAnalysis);
+                const interpolated = TEMPLATE_OR_CONCAT_PATTERN.test(codeForAnalysis);
+                const report = (condition, ruleId, category, title, severity, reason) => {
+                    if (condition)
+                        addFinding(securityFindings, candidate, { ruleId, category, title, severity, confidence: 'medium', reason });
+                };
+                report(SQL_SINK_PATTERN.test(candidate.code) && userControlled && interpolated, 'likely-sql-injection', 'sql_injection', 'Potential SQL injection', 'high', 'A database query appears to interpolate likely user-controlled input.');
+                report(HTML_SINK_PATTERN.test(candidate.code) && userControlled, 'likely-xss', 'cross_site_scripting', 'Potential cross-site scripting', 'high', 'An HTML execution sink appears to receive likely user-controlled input.');
+                report(FILE_SINK_PATTERN.test(candidate.code) && userControlled, 'likely-path-traversal', 'path_traversal', 'Potential path traversal', 'high', 'A filesystem path appears to be derived from likely user-controlled input without a visible containment check.');
+                report(DESERIALIZATION_SINK_PATTERN.test(candidate.code) && userControlled, 'unsafe-deserialization', 'insecure_deserialization', 'Potential unsafe deserialization', 'high', 'An unsafe deserializer appears to receive likely user-controlled data.');
+                report(UNSAFE_JWT_PATTERN.test(candidate.code), 'unsafe-jwt-validation', 'authentication', 'Potential JWT validation bypass', 'high', 'JWT decoding or configuration appears to disable signature or algorithm validation.');
+                report(WEAK_CRYPTO_PATTERN.test(candidate.code), 'weak-security-crypto', 'insecure_cryptography', 'Weak cryptography in a security-sensitive operation', 'medium', 'MD5, SHA-1, ECB, or DES appears in a security-sensitive operation.');
+                report(UNSAFE_CORS_PATTERN.test(codeForAnalysis), 'unsafe-cors', 'security_misconfiguration', 'Overly permissive CORS configuration', 'medium', 'The configuration appears to allow unrestricted cross-origin access.');
+                break;
+            }
+            case 'supply_chain': {
+                const report = (condition, ruleId, category, title, severity, reason) => {
+                    if (condition)
+                        addFinding(securityFindings, candidate, { ruleId, category, title, severity, confidence: 'medium', reason });
+                };
+                report(INSTALL_HOOK_PATTERN.test(candidate.code) && (DOWNLOAD_EXEC_PATTERN.test(codeForAnalysis) || OBFUSCATED_EXEC_PATTERN.test(codeForAnalysis)), 'malicious-install-hook', 'supply_chain', 'Install hook downloads or decodes executable code', 'high', 'A package lifecycle hook appears to download or decode and execute code.');
+                report(UNSAFE_WORKFLOW_PATTERN.test(candidate.code), 'unsafe-github-workflow', 'ci_security', 'Risky GitHub Actions trigger or permissions', 'high', 'A workflow uses broad write permissions, pull_request_target, or untrusted event data in an execution context; verify privilege boundaries.');
+                report(DOWNLOAD_EXEC_PATTERN.test(codeForAnalysis), 'download-and-execute', 'download_execution', 'Downloaded content appears to be executed', 'high', 'Remote content appears to be passed to a shell or made executable.');
+                report(REVERSE_SHELL_PATTERN.test(codeForAnalysis), 'reverse-shell', 'remote_control', 'Potential reverse shell', 'high', 'Code matches a common reverse-shell construction.');
+                report(OBFUSCATED_EXEC_PATTERN.test(codeForAnalysis), 'obfuscated-execution', 'obfuscation', 'Encoded content appears to be dynamically executed', 'high', 'Encoded or decoded content appears to reach a dynamic execution sink.');
+                report(PERSISTENCE_PATTERN.test(codeForAnalysis), 'persistence-mechanism', 'persistence', 'System persistence mechanism', 'high', 'Code appears to create an operating-system startup or scheduled execution mechanism.');
+                report(CRYPTOMINING_PATTERN.test(codeForAnalysis), 'cryptomining', 'resource_abuse', 'Cryptocurrency mining behavior', 'high', 'Code references a mining protocol or known mining software.');
+                report(DESTRUCTIVE_COMMAND_PATTERN.test(codeForAnalysis), 'destructive-command', 'destructive_behavior', 'Potential destructive system command', 'high', 'A command appears capable of recursively deleting or overwriting critical system data.');
+                break;
+            }
         }
     }
     return { securityFindings, behaviors, networkCalls };
@@ -725,24 +789,52 @@ const SAME_FILE_CORRELATION_SCORE = 0.6;
  * Future AST/LSP analysis can add stronger same-function, import, and call
  * graph relationships through this single scored representation.
  */
-function correlateEvidence(sourceFile, sinkFile) {
-    if (normalizePath(sourceFile) !== normalizePath(sinkFile)) {
-        return null;
+function correlateEvidence(sourceFile, sinkFile, imports) {
+    const source = normalizePath(sourceFile);
+    const sink = normalizePath(sinkFile);
+    if (source === sink)
+        return { kind: 'same_file', score: SAME_FILE_CORRELATION_SCORE };
+    const edges = new Map();
+    for (const edge of imports) {
+        const from = normalizePath(edge.from), to = normalizePath(edge.to);
+        if (!edges.has(from))
+            edges.set(from, new Set());
+        if (!edges.has(to))
+            edges.set(to, new Set());
+        edges.get(from).add(to);
+        edges.get(to).add(from);
     }
-    return { kind: 'same_file', score: SAME_FILE_CORRELATION_SCORE };
+    if (edges.get(source)?.has(sink))
+        return { kind: 'direct_import', score: 0.75 };
+    const queue = [[source, 0]];
+    const seen = new Set([source]);
+    while (queue.length) {
+        const [file, depth] = queue.shift();
+        if (depth >= 3)
+            continue;
+        for (const next of edges.get(file) ?? []) {
+            if (next === sink)
+                return { kind: 'call_graph', score: 0.65 };
+            if (!seen.has(next)) {
+                seen.add(next);
+                queue.push([next, depth + 1]);
+            }
+        }
+    }
+    return null;
 }
 /**
  * STEP J — Correlate evidence without claiming a proven data flow. Until
  * syntax-aware analysis is available, only events in the exact same source
  * file are emitted as leads.
  */
-function correlateFindings(behaviors, networkCalls) {
+function correlateFindings(behaviors, networkCalls, imports) {
     const flows = [];
     const sources = behaviors.filter((behavior) => SENSITIVE_FLOW_SOURCES.includes(behavior.category));
     const seen = new Set();
     for (const source of sources) {
         for (const sink of networkCalls) {
-            const correlation = correlateEvidence(source.file, sink.file);
+            const correlation = correlateEvidence(source.file, sink.file, imports);
             if (!correlation) {
                 continue;
             }
@@ -757,7 +849,7 @@ function correlateFindings(behaviors, networkCalls) {
                 sink: 'network_access',
                 correlation,
                 files: [...new Set([source.file, sink.file])],
-                reason: 'Sensitive input handling and outbound network activity occur in the same source file; verify whether data reaches the destination.',
+                reason: `Sensitive input handling and outbound network activity are structurally related (${correlation.kind}); verify whether data reaches the destination.`,
                 evidence: {
                     source: {
                         file: source.file,
@@ -852,6 +944,17 @@ function languageForPath(file) {
         swift: 'swift',
         dart: 'dart',
         lua: 'lua',
+        scala: 'scala',
+        sc: 'scala',
+        ex: 'elixir',
+        exs: 'elixir',
+        erl: 'erlang',
+        hrl: 'erlang',
+        r: 'r',
+        rmd: 'r',
+        sol: 'solidity',
+        move: 'move',
+        ipynb: 'jupyter notebook',
         sh: 'shell',
         bash: 'shell',
         zsh: 'shell',
@@ -1074,7 +1177,7 @@ function secretPresenceSecurityFindings(secretFindings) {
     });
 }
 function parseDiscoveryCandidate(line, candidates) {
-    const match = line.match(/^CODEVET_CANDIDATE:(keyboard_input|microphone_access|sensitive_system_access|external_http|process_execution|clipboard_access|credential_handling|tracking_telemetry):([A-Za-z0-9+/=]+):(\d+):(\d+):([A-Za-z0-9+/=]*):([A-Za-z0-9+/=]*)$/);
+    const match = line.match(/^CODEVET_CANDIDATE:(keyboard_input|microphone_access|sensitive_system_access|external_http|process_execution|clipboard_access|credential_handling|tracking_telemetry|security_signal|supply_chain):([A-Za-z0-9+/=]+):(\d+):(\d+):([A-Za-z0-9+/=]*):([A-Za-z0-9+/=]*)$/);
     if (!match)
         return false;
     try {
@@ -1113,6 +1216,20 @@ function parseDiscoveryContext(line, linesByFile) {
     catch {
         // Ignore malformed context without discarding the rest of a scan.
     }
+    return true;
+}
+function parseRepositoryImport(line, imports) {
+    const match = line.match(/^CODEVET_IMPORT:([A-Za-z0-9+/=]+):([A-Za-z0-9+/=]+)$/);
+    if (!match)
+        return false;
+    try {
+        const from = normalizePath(Buffer.from(match[1], 'base64').toString('utf8'));
+        const to = normalizePath(Buffer.from(match[2], 'base64').toString('utf8'));
+        if (from && to && from.length <= 1_000 && to.length <= 1_000 &&
+            !imports.some((edge) => edge.from === from && edge.to === to))
+            imports.push({ from, to });
+    }
+    catch { /* Ignore malformed import metadata. */ }
     return true;
 }
 function parseDiscoveryEvent(line, category, candidates, linesByFile) {
@@ -1165,6 +1282,7 @@ export function parseScannerOutput(stdout) {
     const linesByFile = new Map();
     const candidates = [];
     const secretFindings = [];
+    const imports = [];
     let inInventory = false;
     let inDiscovery = false;
     let category = null;
@@ -1217,7 +1335,7 @@ export function parseScannerOutput(stdout) {
             category = null;
             continue;
         }
-        const categoryBegin = line.match(/^CODEVET_CATEGORY_BEGIN:(keyboard_input|microphone_access|sensitive_system_access|external_http|process_execution|clipboard_access|credential_handling|tracking_telemetry)$/);
+        const categoryBegin = line.match(/^CODEVET_CATEGORY_BEGIN:(keyboard_input|microphone_access|sensitive_system_access|external_http|process_execution|clipboard_access|credential_handling|tracking_telemetry|security_signal|supply_chain)$/);
         if (categoryBegin) {
             category = categoryBegin[1];
             continue;
@@ -1232,6 +1350,9 @@ export function parseScannerOutput(stdout) {
         if (inDiscovery && parseDiscoveryContext(line, linesByFile)) {
             continue;
         }
+        if (inDiscovery && parseRepositoryImport(line, imports)) {
+            continue;
+        }
         // Backward-compatible parsing for scanner output produced before the
         // two-pass discovery protocol.
         if (inDiscovery && category) {
@@ -1244,7 +1365,7 @@ export function parseScannerOutput(stdout) {
         ...secretPresenceSecurityFindings(secretFindings),
         ...analysis.securityFindings,
     ].slice(0, MAX_FINDINGS);
-    const candidateFlows = correlateFindings(analysis.behaviors, analysis.networkCalls);
+    const candidateFlows = correlateFindings(analysis.behaviors, analysis.networkCalls, imports);
     // Secret-file content is never present in linesByFile, and therefore never
     // appears in context snippets or AI input.
     const snippets = collectSnippets(analysis.securityFindings, analysis.behaviors, analysis.networkCalls, linesByFile);
@@ -1257,6 +1378,7 @@ export function parseScannerOutput(stdout) {
         behaviors: analysis.behaviors,
         networkCalls: analysis.networkCalls,
         candidateFlows,
+        imports,
         snippets,
         findings: securityFindings,
         // Filled by runScannerContainer only after deterministic parsing.

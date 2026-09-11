@@ -1071,7 +1071,7 @@ const readline = require('node:readline')
 const category = process.argv[2]
 const limit = Number(process.argv[3])
 const lowConfidencePath = /(^|\\/)(?:test|tests|__tests__|fixtures?|mocks?|docs?|examples?)\\/|(?:^|\\/)(?:README|CHANGELOG|LICENSE)(?:\\.|$)|(?:_test\\.go|\\.(?:test|spec)\\.[jt]sx?|\\.md|\\.lock|min\\.js|\\.map)$/i
-const sourceFile = /\\.(?:[cm]?[jt]sx?|py|go|rs|java|kt|kts|rb|php|c|h|cc|cpp|cxx|cs|swift|dart|lua|sh|bash|zsh|fish|ksh|dash|ps1|bat|cmd|vue|svelte)$/i
+const sourceFile = /\\.(?:[cm]?[jt]sx?|py|go|rs|java|kt|kts|scala|sc|rb|php|ex|exs|erl|hrl|r|rmd|sol|move|c|h|cc|cpp|cxx|cs|swift|dart|lua|sh|bash|zsh|fish|ksh|dash|ps1|bat|cmd|vue|svelte|ipynb)$/i
 const entrypointPath = /(?:^|\\/)(?:main|index|app|server|cli)\\.(?:[cm]?[jt]sx?|py|go|rs|rb|php)$|(?:^|\\/)cmd\\/[^/]+\\.(?:go|rs)$/i
 const networkSink = /\\b(?:fetch|axios|got|request|http|https|grpc|requests?|httpx|aiohttp|urllib|reqwest)\\s*(?:\\.|\\()|sendBeacon\\s*\\(|new\\s+WebSocket\\s*\\(|XMLHttpRequest|\\b(?:curl|wget)\\b|\\b(?:net\\.)?connect\\s*\\(|\\bsocket\\s*\\(|\\b(?:HttpClient|OkHttp|Net::HTTP)\\b/i
 const capabilityApi = {
@@ -1085,6 +1085,8 @@ const capabilityApi = {
   // process, cookies, and device_id. Those are keywords, not API evidence.
   sensitive_system_access: /getDisplayMedia|screenCapture|desktopCapturer|screencapture|document\\.cookie|browser\\.(?:cookies|history)|os\\.(?:homedir|hostname)|process\\.(?:env|platform)|\\/proc\\/|\\/dev\\//i,
   credential_handling: /(?:querySelector|getElementById|FormData|localStorage|sessionStorage|\\.value\\b)[^\\n]{0,100}\\b(?:password|passwd|credential|token|api[_-]?key|secret)\\b|\\b(?:password|passwd|credential|token|api[_-]?key|secret)\\b[^\\n]{0,100}(?:\\.value\\b|querySelector|FormData|localStorage|sessionStorage)/i,
+  security_signal: /(?:query|execute|raw|execSQL|createQuery|innerHTML|document\\.write|dangerouslySetInnerHTML|readFile|writeFile|sendFile|pickle\\.load|yaml\\.load|unserialize|ObjectInputStream|BinaryFormatter|jwt\\.decode|verify_signature|createHash|md5|sha1|Access-Control-Allow-Origin)/i,
+  supply_chain: /(?:preinstall|postinstall|pull_request_target|write-all|curl|wget|Invoke-WebRequest|\\/dev\\/tcp|bash\\s+-i|b64decode|FromBase64String|LaunchAgents|crontab|schtasks|stratum\\+tcp|xmrig|coinhive|rm\\s+-rf|Remove-Item)/i,
 }
 const sourceExpression = /(?:\\.value\\b|FormData\\s*\\(|(?:req(?:uest)?\\.)?(?:body|params|query)\\b|process\\.env\\b|(?:localStorage|sessionStorage)\\.getItem\\s*\\(|document\\.cookie|os\\.(?:hostname|homedir)\\s*\\(|navigator\\.(?:clipboard|mediaDevices)|(?:event|e)\\.key\\b)/i
 const sensitiveSourceCategory = new Set([
@@ -1148,7 +1150,7 @@ RANK_CATEGORY
             --hidden \
             --no-ignore \
             --ignore-case \
-            --max-filesize 1M \
+            --max-filesize 5M \
             --max-columns 500 \
             --max-count 10 \
             --glob '!**/.git/**' \
@@ -1181,6 +1183,8 @@ RANK_CATEGORY
         run_rg clipboard_access -e 'clipboard|navigator\\.clipboard|pasteboard|xclip|pbcopy|GetClipboardData'
         run_rg credential_handling -e '\\b(password|passwd|credential|token|api[_-]?key|secret|private[_-]?key)s?\\b'
         run_rg tracking_telemetry -e 'analytics|telemetry|fingerprint|deviceId|machineId|tracking|usage[_ -]?collection'
+        run_rg security_signal -e 'query\\(|execute\\(|raw\\(|execSQL|createQuery|innerHTML|outerHTML|document\\.write|dangerouslySetInnerHTML|v-html|readFile|writeFile|createReadStream|createWriteStream|sendFile|pickle\\.loads?|yaml\\.load|unserialize|ObjectInputStream|BinaryFormatter|jwt\\.decode|verify_signature|algorithms?.*none|createHash|md5\\(|sha1\\(|Access-Control-Allow-Origin|credentials[[:space:]]*:[[:space:]]*true'
+        run_rg supply_chain -e 'preinstall|postinstall|pull_request_target|permissions[[:space:]]*:[[:space:]]*write-all|curl|wget|Invoke-WebRequest|/dev/tcp|bash[[:space:]]+-i|b64decode|FromBase64String|LaunchAgents|crontab|systemctl[[:space:]]+enable|schtasks|stratum\\+tcp|xmrig|coinhive|rm[[:space:]]+-rf|Remove-Item'
 
         # Rank across categories, then Pass 2: fetch +/- 25 lines only for
         # selected leads. Node is used only to read files; it never executes
@@ -1251,19 +1255,34 @@ for (const candidate of selected) {
     target = fs.realpathSync(candidate.file)
     if (target !== root && !target.startsWith(root + path.sep)) continue
     const stat = fs.statSync(target)
-    if (!stat.isFile() || stat.size > 1024 * 1024) continue
+    if (!stat.isFile() || stat.size > 5 * 1024 * 1024) continue
   } catch { continue }
   const file = path.relative(root, target).split(path.sep).join('/')
   let lines = requested.get(file)
   if (!lines) { lines = new Set(); requested.set(file, lines) }
   for (let number = Math.max(1, candidate.line - 25); number <= candidate.line + 25; number += 1) lines.add(number)
 }
+const selectedFiles = new Set(requested.keys())
+function resolveLocalImport(from, specifier) {
+  if (!specifier.startsWith('.')) return undefined
+  const base = path.posix.normalize(path.posix.join(path.posix.dirname(from), specifier))
+  const choices = [base, ...['ts','tsx','js','jsx','mjs','cjs','py','go','rs'].map((ext) => base + '.' + ext), ...['ts','tsx','js','jsx','py','go','rs'].map((ext) => base + '/index.' + ext)]
+  return choices.find((choice) => selectedFiles.has(choice))
+}
 for (const [file, wanted] of requested) {
   try {
-    const content = fs.readFileSync(path.join(root, file), 'utf8').split(/\\r?\\n/)
+    const rawContent = fs.readFileSync(path.join(root, file), 'utf8')
+    const content = rawContent.split(/\\r?\\n/)
     for (const lineNumber of [...wanted].sort((a, b) => a - b)) {
       const text = content[lineNumber - 1]
       if (text !== undefined) process.stdout.write('CODEVET_CONTEXT:' + encode(file) + ':' + lineNumber + ':' + encode(text.slice(0, 500)) + '\\n')
+    }
+    // Emit only structural import edges between selected evidence files. This
+    // improves cross-file correlation without claiming a proven value flow.
+    const importPattern = /(?:import(?:[\\s\\S]{0,200}?from\\s*)?|export[\\s\\S]{0,100}?from\\s*|require\\s*\\()\s*['"]([^'"]+)['"]/g
+    for (const match of rawContent.matchAll(importPattern)) {
+      const target = resolveLocalImport(file, match[1])
+      if (target) process.stdout.write('CODEVET_IMPORT:' + encode(file) + ':' + encode(target) + '\\n')
     }
   } catch { /* A disappearing/unreadable file has no context. */ }
 }
