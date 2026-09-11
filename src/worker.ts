@@ -1,7 +1,7 @@
 import type { Channel, ConsumeMessage } from 'amqplib'
 import type { Pool, PoolClient } from 'pg'
 
-import { runScannerContainer, SCANNER_VERSION } from './scan.js'
+import { runScannerContainer, SCANNER_VERSION } from './checks/orchestrator.js'
 
 /**
  * STEP A — The queue message is the only input crossing into the trusted
