@@ -17,6 +17,7 @@ import {
   PI_AGENT_INTEGRITY,
   PI_AGENT_PACKAGE,
   PI_AGENT_VERSION,
+  SCANNER_TIMEOUT_SEC,
   buildAgentFilePriorities,
   buildAgentPrompt,
   coverageForAgent,
@@ -31,10 +32,10 @@ import type { AgentAnalysis, ScannerResult } from './analysis.js'
 const SANDBOX_START_TIMEOUT_MS = 60_000
 const SANDBOX_STATUS_POLL_MS = 250
 const SANDBOX_EXEC_START_RETRIES = 5
-const MAX_DISCOVERY_CANDIDATES_PER_CATEGORY = 80
-const MAX_CONTEXT_CANDIDATES = 250
-const MAX_SELECTED_CANDIDATES_PER_CATEGORY = 40
-const MAX_SANDBOX_OUTPUT_BYTES = 32 * 1024 * 1024
+const MAX_DISCOVERY_CANDIDATES_PER_CATEGORY = 250
+const MAX_CONTEXT_CANDIDATES = 1_000
+const MAX_SELECTED_CANDIDATES_PER_CATEGORY = 125
+const MAX_SANDBOX_OUTPUT_BYTES = 128 * 1024 * 1024
 
 /**
  * STEP C — Build the disposable scanner environment.
@@ -1114,7 +1115,7 @@ SELECT_AND_CONTEXT
         echo "CODEVET_DISCOVERY_END"
 SCAN_SCRIPT
   `,
-      120
+      SCANNER_TIMEOUT_SEC
     )
 
     if (result.timedOut || result.truncated) {

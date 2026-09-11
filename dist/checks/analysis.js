@@ -1,14 +1,16 @@
-const MAX_FINDINGS = 1000;
-const MAX_CANDIDATES = 1000;
-const MAX_SNIPPETS = 250;
-const MAX_FLOWS = 100;
+const MAX_FINDINGS = 10_000;
+const MAX_CANDIDATES = 10_000;
+const MAX_SNIPPETS = 1_000;
+const MAX_FLOWS = 1_000;
 // Pass 1 retains only the strongest match-only leads per category. Context is
 // fetched later and only for the globally selected leads. Ranking deliberately
 // happens before this cap so broad keyword matches cannot win by appearing
 // earlier in ripgrep's output.
-export const MAX_SECRET_FINDINGS = 250;
-export const MAX_INVENTORY_FILES = 5000;
-export const MAX_MANIFESTS = 100;
+export const MAX_SECRET_FINDINGS = 10_000;
+// Keep enough path and manifest metadata for large monorepos. The scanner
+// still records the exact repository file count when a repository is larger.
+export const MAX_INVENTORY_FILES = 100_000;
+export const MAX_MANIFESTS = 1_000;
 // The create/status and exec services can briefly disagree during boot. A
 // rejected exec has not started a command when it reports this condition, so
 // retry only that specific pre-start error (never an unknown command failure).
@@ -19,6 +21,7 @@ function boundedPositiveIntegerEnv(name, fallback, maximum) {
 // These are execution limits, not model instructions. Environment settings may
 // reduce a limit but cannot raise the cost/safety ceilings.
 export const AGENT_TIMEOUT_SEC = boundedPositiveIntegerEnv('CODEVET_AI_TIMEOUT_SEC', 300, 300);
+export const SCANNER_TIMEOUT_SEC = boundedPositiveIntegerEnv('CODEVET_SCANNER_TIMEOUT_SEC', 600, 900);
 export const MAX_AGENT_OUTPUT_BYTES = boundedPositiveIntegerEnv('CODEVET_AI_MAX_OUTPUT_BYTES', 256 * 1024, 256 * 1024);
 // Keep the initial evidence compact; the agent can inspect relevant files with
 // its read-only tools instead of receiving a large, potentially stale dump.
@@ -26,11 +29,11 @@ export const MAX_AGENT_PROMPT_BYTES = 64 * 1024;
 const MAX_AGENT_PROMPT_STRING_BYTES = 1_024;
 export const MAX_AGENT_ITEMS = 50;
 export const MAX_AGENT_STRING_LENGTH = 4_000;
-export const MAX_AGENT_LLM_TURNS = 18;
-export const MAX_AGENT_TOOL_CALLS = 30;
+export const MAX_AGENT_LLM_TURNS = 24;
+export const MAX_AGENT_TOOL_CALLS = 60;
 export const MIN_FILES_TO_INSPECT = 2;
-export const MAX_AGENT_FILES = 50;
-export const MAX_AGENT_READ_BYTES = 512 * 1024;
+export const MAX_AGENT_FILES = 100;
+export const MAX_AGENT_READ_BYTES = 1024 * 1024;
 export const MAX_AGENT_SINGLE_FILE_READ_BYTES = 50 * 1024;
 export const MAX_AGENT_LIST_RESULTS = 250;
 // Keep the agent runtime version in the scanner cache key. Changing the
@@ -38,7 +41,7 @@ export const MAX_AGENT_LIST_RESULTS = 250;
 export const PI_AGENT_PACKAGE = '@earendil-works/pi-coding-agent';
 export const PI_AGENT_VERSION = '0.85.1';
 export const PI_AGENT_INTEGRITY = 'sha512-FGRN+OHbWaefBPGaTggAdLjrIHW+s2PzLyglz/5dfLzb9of7uuXMXYC0fJIeZTw+shS32o2cuQ9jF7YSDuL/oQ==';
-export const SCANNER_VERSION = `v16-pi-${PI_AGENT_VERSION}`;
+export const SCANNER_VERSION = `v17-pi-${PI_AGENT_VERSION}`;
 const LOW_CONFIDENCE_PATH_PATTERN = /(^|\/)(?:test|tests|__tests__|fixtures?|mocks?|docs?|examples?)\/|(?:^|\/)(?:README|CHANGELOG|LICENSE)(?:\.|$)|(?:_test\.go|\.(?:test|spec)\.[jt]sx?|\.md|\.lock|min\.js|\.map)$|(?:^|\/)node_modules\//i;
 const SOURCE_FILE_PATTERN = /\.(?:ts|tsx|js|jsx|mjs|cjs|py|go|rs|java|kt|kts|rb|php|c|h|cc|cpp|cxx|cs|swift|dart|lua|sh|bash|zsh|fish|ksh|dash|ps1|bat|cmd|html?|vue|svelte)$/i;
 // Build, deployment, and package-manager configuration can execute commands
@@ -134,14 +137,26 @@ export function configuredAgent() {
     return { provider, model: process.env.CODEVET_AI_MODEL ?? '', apiKey, piKeyEnv };
 }
 export function coverageForAgent(repositoryFiles, inspectedFiles = []) {
+    const uninspectedFiles = Math.max(0, repositoryFiles - inspectedFiles.length);
+    const limitations = [
+        `AI analysis is limited to at most ${MAX_AGENT_FILES} files, ${MAX_AGENT_READ_BYTES / 1024} KB of repository content, ${MAX_AGENT_TOOL_CALLS} tool calls, and ${MAX_AGENT_LLM_TURNS} model turns.`,
+        'Coverage is recorded by the trusted scanner; the model does not self-report inspected files.',
+    ];
+    if (repositoryFiles > MAX_INVENTORY_FILES) {
+        limitations.push(`Repository path inventory was truncated to ${MAX_INVENTORY_FILES} of ${repositoryFiles} files.`);
+    }
+    if (uninspectedFiles > 0) {
+        const percent = repositoryFiles > 0
+            ? ((inspectedFiles.length / repositoryFiles) * 100).toFixed(2)
+            : '0.00';
+        limitations.push(`AI inspected ${percent}% of repository files; ${uninspectedFiles} files were not inspected by the AI.`);
+    }
+    limitations.push('Deterministic discovery ignores generated/dependency directories and files over 1 MB, and retains only the highest-ranked matches when evidence caps are reached.');
     return {
         repositoryFiles,
         filesInspected: inspectedFiles.length,
         inspectedFiles,
-        limitations: [
-            `AI analysis is limited to at most ${MAX_AGENT_FILES} files, ${MAX_AGENT_READ_BYTES / 1024} KB of repository content, ${MAX_AGENT_TOOL_CALLS} tool calls, and ${MAX_AGENT_LLM_TURNS} model turns.`,
-            'Coverage is recorded by the trusted scanner; the model does not self-report inspected files.',
-        ],
+        limitations,
     };
 }
 export function emptyAgentAnalysis(status, repositoryFiles, error) {
@@ -406,7 +421,25 @@ export function parseAgentOutput(stdout, coverage = coverageForAgent(0)) {
             throw new Error('invalid context fields');
         repositoryContext = { ...(purpose ? { purpose } : {}), ...(applicationType ? { applicationType } : {}), ...(mainComponents ? { mainComponents } : {}) };
     }
-    return { status: 'completed', verdict: value.verdict, summary, overallRisk: value.overallRisk, coverage, ...(repositoryContext ? { repositoryContext } : {}), suspiciousBehaviors, securityIssues, externalServices, notes };
+    // A model cannot turn a tiny sample of a very large repository into a
+    // repository-level clean result. Preserve its findings and risk assessment,
+    // but fail closed on the verdict when trusted coverage is below one percent
+    // and more than 1,000 files remain unread.
+    const uninspectedFiles = Math.max(0, coverage.repositoryFiles - coverage.filesInspected);
+    const coverageRatio = coverage.repositoryFiles > 0
+        ? coverage.filesInspected / coverage.repositoryFiles
+        : 1;
+    const verdict = value.verdict === 'no_major_concerns_found' &&
+        uninspectedFiles > 1_000 && coverageRatio < 0.01
+        ? 'inconclusive'
+        : value.verdict;
+    const coverageNote = 'The trusted coverage check changed the AI verdict to inconclusive because less than 1% of a large repository was inspected.';
+    const coverageNotes = verdict !== value.verdict
+        ? notes.length < MAX_AGENT_ITEMS
+            ? [...notes, coverageNote]
+            : [...notes.slice(0, MAX_AGENT_ITEMS - 1), coverageNote]
+        : notes;
+    return { status: 'completed', verdict, summary, overallRisk: value.overallRisk, coverage, ...(repositoryContext ? { repositoryContext } : {}), suspiciousBehaviors, securityIssues, externalServices, notes: coverageNotes };
 }
 function secretLabel(key) {
     const normalized = key

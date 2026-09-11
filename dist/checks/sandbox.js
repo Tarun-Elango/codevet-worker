@@ -1,13 +1,13 @@
 import { Sandbox } from 'railway';
-import { AGENT_SYSTEM_PROMPT, AGENT_TIMEOUT_SEC, MAX_AGENT_FILES, MAX_AGENT_LIST_RESULTS, MAX_AGENT_LLM_TURNS, MAX_AGENT_READ_BYTES, MAX_AGENT_SINGLE_FILE_READ_BYTES, MAX_AGENT_TOOL_CALLS, MAX_INVENTORY_FILES, MAX_MANIFESTS, MAX_SECRET_FINDINGS, MAX_AGENT_OUTPUT_BYTES, MIN_FILES_TO_INSPECT, PI_AGENT_INTEGRITY, PI_AGENT_PACKAGE, PI_AGENT_VERSION, buildAgentFilePriorities, buildAgentPrompt, coverageForAgent, emptyAgentAnalysis, parseAgentOutput, parseScannerOutput, redactSensitiveText, } from './analysis.js';
+import { AGENT_SYSTEM_PROMPT, AGENT_TIMEOUT_SEC, MAX_AGENT_FILES, MAX_AGENT_LIST_RESULTS, MAX_AGENT_LLM_TURNS, MAX_AGENT_READ_BYTES, MAX_AGENT_SINGLE_FILE_READ_BYTES, MAX_AGENT_TOOL_CALLS, MAX_INVENTORY_FILES, MAX_MANIFESTS, MAX_SECRET_FINDINGS, MAX_AGENT_OUTPUT_BYTES, MIN_FILES_TO_INSPECT, PI_AGENT_INTEGRITY, PI_AGENT_PACKAGE, PI_AGENT_VERSION, SCANNER_TIMEOUT_SEC, buildAgentFilePriorities, buildAgentPrompt, coverageForAgent, emptyAgentAnalysis, parseAgentOutput, parseScannerOutput, redactSensitiveText, } from './analysis.js';
 // Sandbox lifecycle limits apply only to the isolated execution step.
 const SANDBOX_START_TIMEOUT_MS = 60_000;
 const SANDBOX_STATUS_POLL_MS = 250;
 const SANDBOX_EXEC_START_RETRIES = 5;
-const MAX_DISCOVERY_CANDIDATES_PER_CATEGORY = 80;
-const MAX_CONTEXT_CANDIDATES = 250;
-const MAX_SELECTED_CANDIDATES_PER_CATEGORY = 40;
-const MAX_SANDBOX_OUTPUT_BYTES = 32 * 1024 * 1024;
+const MAX_DISCOVERY_CANDIDATES_PER_CATEGORY = 250;
+const MAX_CONTEXT_CANDIDATES = 1_000;
+const MAX_SELECTED_CANDIDATES_PER_CATEGORY = 125;
+const MAX_SANDBOX_OUTPUT_BYTES = 128 * 1024 * 1024;
 /**
  * STEP C — Build the disposable scanner environment.
  *
@@ -1033,7 +1033,7 @@ SELECT_AND_CONTEXT
         rm -f "$discovery_file"
         echo "CODEVET_DISCOVERY_END"
 SCAN_SCRIPT
-  `, 120);
+  `, SCANNER_TIMEOUT_SEC);
         if (result.timedOut || result.truncated) {
             throw new Error(result.timedOut
                 ? 'Sandbox command timed out'
