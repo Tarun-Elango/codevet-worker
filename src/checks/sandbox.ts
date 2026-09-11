@@ -96,12 +96,14 @@ export const scannerTemplate = Sandbox.template()
     import { access, readFile, readdir, realpath, stat, writeFile } from "node:fs/promises"
     import { constants } from "node:fs"
     import { createReadTool } from "@earendil-works/pi-coding-agent"
+    import { StringEnum } from "@earendil-works/pi-ai"
+    import { Type } from "typebox"
     import { resolve, sep } from "node:path"
 
     const REPOSITORY_ROOT = "/workspace/repo"
     // grep can return arbitrary source lines without passing through the read
     // redactor, so it is deliberately unavailable to the model.
-    const SCOPED_TOOLS = new Set(["read", "find", "ls"])
+    const SCOPED_TOOLS = new Set(["read", "find", "ls", "codevet_report"])
     // These files may be inventoried by name, but their contents must never
     // be exposed to the model/provider. Deterministic scanning handles them
     // locally and emits metadata only.
@@ -140,6 +142,61 @@ export const scannerTemplate = Sandbox.template()
     }
 
     export default async function (pi) {
+      let reportSubmitted = false
+      // Use a terminating structured-output tool instead of relying on print
+      // mode stdout. A final tool call otherwise legitimately leaves stdout
+      // empty even though the agent completed successfully.
+      pi.registerTool({
+        name: "codevet_report",
+        label: "CodeVet report",
+        description: "Record the final repository security analysis. Call exactly once as the final action.",
+        promptSnippet: "Submit the final CodeVet security analysis",
+        promptGuidelines: ["Use codevet_report exactly once as the final action for every repository analysis."],
+        parameters: Type.Object({
+          status: StringEnum(["completed"]),
+          verdict: StringEnum(["concerns_found", "no_major_concerns_found", "inconclusive"]),
+          summary: Type.Optional(Type.String()),
+          overallRisk: StringEnum(["none", "low", "medium", "high", "critical", "unknown"]),
+          repositoryContext: Type.Optional(Type.Object({
+            purpose: Type.Optional(Type.String()),
+            applicationType: Type.Optional(Type.String()),
+            mainComponents: Type.Optional(Type.Array(Type.String())),
+          })),
+          suspiciousBehaviors: Type.Array(Type.Object({
+            category: Type.String(), description: Type.String(), capability: Type.String(),
+            dataAccessed: Type.Optional(Type.Array(Type.String())), destination: Type.Optional(Type.String()),
+            leavesDevice: Type.Optional(Type.Boolean()), expectedForApplication: Type.Optional(Type.Boolean()),
+            whySuspicious: Type.String(), file: Type.String(), line: Type.Optional(Type.Integer()),
+            relatedFiles: Type.Optional(Type.Array(Type.String())), confidence: Type.Number(),
+          })),
+          securityIssues: Type.Array(Type.Object({
+            category: Type.String(), file: Type.String(), line: Type.Optional(Type.Integer()),
+            description: Type.String(), severity: StringEnum(["low", "medium", "high", "critical"]),
+            confidence: Type.Number(), relatedFiles: Type.Optional(Type.Array(Type.String())),
+          })),
+          externalServices: Type.Array(Type.Object({
+            host: Type.Optional(Type.String()), purpose: Type.Optional(Type.String()),
+            file: Type.Optional(Type.String()), line: Type.Optional(Type.Integer()),
+            dataSent: Type.Optional(Type.Array(Type.String())),
+          })),
+          notes: Type.Array(Type.String()),
+        }),
+        async execute(_toolCallId, params) {
+          if (reportSubmitted) throw new Error("CodeVet report was already submitted")
+          const report = JSON.stringify({ ...params, summary: params.summary ?? null })
+          if (Buffer.byteLength(report) > ${MAX_AGENT_OUTPUT_BYTES}) {
+            throw new Error("CodeVet report exceeds the output budget")
+          }
+          await writeFile("/tmp/codevet-agent-report.json", report, { mode: 0o600 })
+          reportSubmitted = true
+          return {
+            content: [{ type: "text", text: "CodeVet report recorded." }],
+            details: {},
+            terminate: true,
+          }
+        },
+      })
+
       // Override Pi's built-in read tool rather than filtering its result:
       // createReadTool receives already-redacted text, so the built-in tool
       // cannot serialize an original secret into a model-facing result.
@@ -198,7 +255,7 @@ export const scannerTemplate = Sandbox.template()
           block: true,
           reason:
             reason +
-            "; do not call another tool. Return the required final JSON object now.",
+            "; do not inspect more files. Call codevet_report with the final analysis now.",
         }
       }
 
@@ -301,10 +358,17 @@ export const scannerTemplate = Sandbox.template()
       })
 
       pi.on("tool_call", async (event) => {
+        // The final structured report is permitted even on the reserved last
+        // turn. Its terminating result prevents another provider request.
+        if (event.toolName === "codevet_report") {
+          toolCalls += 1
+          return undefined
+        }
+
         // A model that ignores the finalization instruction must not start
         // more inspection work on the reserved response turn.
         if (isFinalResponseTurn) {
-          return requestFinalResponse("Inspection is complete")
+          return requestFinalResponse("Inspection is complete; call codevet_report now")
         }
 
         // Count attempted calls before any other check. Once either budget is
@@ -505,9 +569,9 @@ export async function runAgentAnalysis(
             exit 127
           fi
           if [ -n "$CODEVET_AI_MODEL" ]; then
-            exec "$PI_COMMAND" --print --no-session --offline --provider "$CODEVET_AI_PROVIDER" --model "$CODEVET_AI_MODEL" --api-key "$CODEVET_AGENT_API_KEY" --tools read,find,ls --no-context-files --no-extensions -e /opt/codevet/repository-scope.js --no-skills --no-prompt-templates --no-approve --system-prompt "$CODEVET_AGENT_SYSTEM_PROMPT" -p "Perform the requested repository analysis."
+            exec "$PI_COMMAND" --print --no-session --offline --provider "$CODEVET_AI_PROVIDER" --model "$CODEVET_AI_MODEL" --api-key "$CODEVET_AGENT_API_KEY" --tools read,find,ls,codevet_report --no-context-files --no-extensions -e /opt/codevet/repository-scope.js --no-skills --no-prompt-templates --no-approve --system-prompt "$CODEVET_AGENT_SYSTEM_PROMPT" -p "Perform the requested repository analysis."
           fi
-          exec "$PI_COMMAND" --print --no-session --offline --provider "$CODEVET_AI_PROVIDER" --api-key "$CODEVET_AGENT_API_KEY" --tools read,find,ls --no-context-files --no-extensions -e /opt/codevet/repository-scope.js --no-skills --no-prompt-templates --no-approve --system-prompt "$CODEVET_AGENT_SYSTEM_PROMPT" -p "Perform the requested repository analysis."
+          exec "$PI_COMMAND" --print --no-session --offline --provider "$CODEVET_AI_PROVIDER" --api-key "$CODEVET_AGENT_API_KEY" --tools read,find,ls,codevet_report --no-context-files --no-extensions -e /opt/codevet/repository-scope.js --no-skills --no-prompt-templates --no-approve --system-prompt "$CODEVET_AGENT_SYSTEM_PROMPT" -p "Perform the requested repository analysis."
         '
     `
     // Stop streaming as soon as the model exceeds its response budget; do not
@@ -584,8 +648,15 @@ export async function runAgentAnalysis(
         typeof (metrics as { toolCalls?: unknown }).toolCalls === 'number'
           ? (metrics as { toolCalls: number }).toolCalls
           : 0
+      let reportOutput = result.stdout
+      try {
+        reportOutput = await sandbox.files.read('/tmp/codevet-agent-report.json')
+      } catch {
+        // Backward-compatible fallback for a model that printed JSON instead
+        // of using the structured report tool.
+      }
       const analysis = parseAgentOutput(
-        result.stdout,
+        reportOutput,
         coverageForAgent(scannerResult.inventory.fileCount, filesInspected)
       )
       const message =
