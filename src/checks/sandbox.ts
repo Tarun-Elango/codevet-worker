@@ -196,10 +196,12 @@ export const scannerTemplate = Sandbox.template()
           }
         },
       })
-      // CLI tool allowlists are resolved during startup and may not activate a
-      // tool registered by an extension afterward. Explicitly activate the
-      // trusted report tool while preserving the existing read-only tools.
-      pi.setActiveTools([...new Set([...pi.getActiveTools(), "codevet_report"])])
+      // Action methods cannot run while an extension factory is loading.
+      // Activate the trusted report tool after the extension runtime starts,
+      // while preserving the CLI-selected read-only tools.
+      pi.on("session_start", () => {
+        pi.setActiveTools([...new Set([...pi.getActiveTools(), "codevet_report"])])
+      })
 
       // Override Pi's built-in read tool rather than filtering its result:
       // createReadTool receives already-redacted text, so the built-in tool
