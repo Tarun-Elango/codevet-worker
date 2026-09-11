@@ -196,6 +196,10 @@ export const scannerTemplate = Sandbox.template()
           }
         },
       })
+      // CLI tool allowlists are resolved during startup and may not activate a
+      // tool registered by an extension afterward. Explicitly activate the
+      // trusted report tool while preserving the existing read-only tools.
+      pi.setActiveTools([...new Set([...pi.getActiveTools(), "codevet_report"])])
 
       // Override Pi's built-in read tool rather than filtering its result:
       // createReadTool receives already-redacted text, so the built-in tool
@@ -346,14 +350,12 @@ export const scannerTemplate = Sandbox.template()
         }
       })
 
-      pi.on("before_provider_request", (_event, ctx) => {
-        // Abort before a provider request is sent, so retries and continued
-        // tool loops cannot exceed the LLM-turn budget.
-        if (llmTurns >= MAX_LLM_TURNS) {
-          ctx.abort()
-          return
-        }
-        isFinalResponseTurn = finalResponseRequired
+      pi.on("before_provider_request", () => {
+        // Never abort a provider request here: in print mode an abort exits 0
+        // with empty stdout, which is indistinguishable from a successful
+        // terminating tool call. Once the soft turn budget is reached, deny
+        // further inspection tools until the model submits codevet_report.
+        isFinalResponseTurn = finalResponseRequired || llmTurns >= MAX_LLM_TURNS - 1
         llmTurns += 1
       })
 
@@ -620,6 +622,7 @@ export async function runAgentAnalysis(
       if (diagnostic) console.error(`[${uid}] AI analysis stderr: ${diagnostic}`)
       return emptyAgentAnalysis('failed', scannerResult.inventory.fileCount, 'Agent analysis failed')
     }
+    let metricDiagnostics = 'metrics unavailable'
     try {
       const metricsRaw = await sandbox.files.read('/tmp/codevet-agent-metrics.json')
       const metrics: unknown = JSON.parse(metricsRaw)
@@ -648,6 +651,11 @@ export async function runAgentAnalysis(
         typeof (metrics as { toolCalls?: unknown }).toolCalls === 'number'
           ? (metrics as { toolCalls: number }).toolCalls
           : 0
+      const llmTurns =
+        typeof (metrics as { llmTurns?: unknown }).llmTurns === 'number'
+          ? (metrics as { llmTurns: number }).llmTurns
+          : 0
+      metricDiagnostics = `preloaded=${preloadedFiles} inspected=${filesInspected.length} tools=${toolCalls} turns=${llmTurns}`
       let reportOutput = result.stdout
       try {
         reportOutput = await sandbox.files.read('/tmp/codevet-agent-report.json')
@@ -668,7 +676,7 @@ export async function runAgentAnalysis(
     } catch (error) {
       console.log(
         `[${uid}] AI output diagnostics: stdout=${Buffer.byteLength(result.stdout)}B ` +
-        `stderr=${Buffer.byteLength(result.stderr)}B exit=${result.exitCode}`
+        `stderr=${Buffer.byteLength(result.stderr)}B exit=${result.exitCode} ${metricDiagnostics}`
       )
       // JSON.parse diagnostics can quote model text, so never log a raw
       // SyntaxError. Our explicit validator errors contain fixed messages.
