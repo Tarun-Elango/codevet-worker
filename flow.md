@@ -169,3 +169,29 @@ The returned `ScannerResult` contains:
 | `agentAnalysis` | Validated optional Pi result, `null` when no AI credential is configured. |
 
 The sandbox is destroyed in a `finally` block whether the scan succeeds, fails, times out, or is cancelled.
+
+## Pi agent limits and inputs
+
+| Area | Limit / initial input | What it provides |
+|---|---|---|
+| Tools | `read`, `grep`, `find`, `ls` only; no repo code execution | Read-only repository inspection |
+| Scope | Non-sensitive files under `/workspace/repo`; `.git`, secrets, keys, and images blocked | Redacted source evidence |
+| Initial context | Deterministic findings and metadata (max 64 KB), plus up to 8 priority files (max 256 KB) | Starting leads, not a complete sample |
+| Inspection budget | 30 model turns, 80 tool calls, 4 MB total, 200 KB per file | Bounded deeper investigation |
+| Search/list limits | 200 grep matches / 32 KB per grep; 250 list results | Controlled search results |
+| Runtime/output | 300-second timeout; 256 KB output | Validated structured report or a non-fatal failure |
+
+The final report contains suspicious behaviors, security issues, external services, risk, confidence, and coverage. It is accepted only through the terminating `codevet_report` tool.
+
+
+todo:
+- make the results more focused
+  - clean step 1 to be more aligned
+  - clean whats been given to pi
+  - centralize pi agent-limit controls
+  - intruct to check for mostly suspicious and egregious acts
+
+- reduce token consumption
+- ui basic
+  - lock writes
+  - show all repo reads
