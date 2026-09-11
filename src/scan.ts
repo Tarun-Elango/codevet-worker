@@ -126,22 +126,34 @@ export type ContextSnippet = {
 
 export type AgentAnalysis = {
   status: 'completed' | 'failed' | 'timeout'
-  summary: string | null
+  /** A scoped conclusion, not a claim that the entire repository is safe. */
+  verdict: 'concerns_found' | 'no_major_concerns_found' | 'inconclusive'
   overallRisk: 'none' | 'low' | 'medium' | 'high' | 'critical' | 'unknown'
+  summary: string | null
+  coverage: {
+    repositoryFiles: number
+    filesInspected: number
+    inspectedFiles: string[]
+    limitations: string[]
+  }
   repositoryContext?: {
     purpose?: string
     applicationType?: string
     mainComponents?: string[]
-    filesInspected?: string[]
   }
   suspiciousBehaviors: Array<{
     category: string
+    description: string
+    capability: string
+    dataAccessed?: string[]
+    destination?: string
+    leavesDevice?: boolean
+    expectedForApplication?: boolean
+    whySuspicious: string
     file: string
     line?: number
-    description: string
-    reason: string
-    confidence: number
     relatedFiles?: string[]
+    confidence: number
   }>
   securityIssues: Array<{
     category: string
@@ -377,11 +389,25 @@ function configuredAgent(): { provider: string; model: string; apiKey: string; p
   return { provider, model: process.env.CODEVET_AI_MODEL ?? '', apiKey, piKeyEnv }
 }
 
-function emptyAgentAnalysis(status: 'failed' | 'timeout', error?: string): AgentAnalysis {
+function coverageForAgent(repositoryFiles: number, inspectedFiles: string[] = []): AgentAnalysis['coverage'] {
+  return {
+    repositoryFiles,
+    filesInspected: inspectedFiles.length,
+    inspectedFiles,
+    limitations: [
+      `AI analysis is limited to at most ${MAX_AGENT_FILES} files, ${MAX_AGENT_READ_BYTES / 1024} KB of repository content, ${MAX_AGENT_TOOL_CALLS} tool calls, and ${MAX_AGENT_LLM_TURNS} model turns.`,
+      'Coverage is recorded by the trusted scanner; the model does not self-report inspected files.',
+    ],
+  }
+}
+
+function emptyAgentAnalysis(status: 'failed' | 'timeout', repositoryFiles: number, error?: string): AgentAnalysis {
   return {
     status,
+    verdict: 'inconclusive',
     summary: null,
     overallRisk: 'unknown',
+    coverage: coverageForAgent(repositoryFiles),
     suspiciousBehaviors: [],
     securityIssues: [],
     externalServices: [],
@@ -396,13 +422,13 @@ You MUST inspect the repository files attached in the trusted CodeVet source-con
 
 Analyze at least ${MIN_FILES_TO_INSPECT} relevant attached source files when the repository contains that many. The deterministic findings are leads only and are not sufficient by themselves.
 
-First establish context: inspect top-level structure, the primary manifest or README, likely entry points, and a small number of core files. Then investigate the deterministic candidate leads. They are not confirmed problems. Candidate flows are especially weak leads: a correlation score measures structural proximity only and never establishes data transfer. Follow relevant imports and data flows where needed. Determine sensitive data/capabilities, source, destination, storage/logging, external services, and whether behavior matches the app's apparent purpose. Distinguish live behavior from examples, docs, tests, dead code, and unused imports. Ordinary process launching, password/credential input, microphone access, and network access are behaviors, not security issues. Do not report one as a security issue merely because an API is present; require evidence such as user-controlled shell input, credential exfiltration, sensitive logging, a hard-coded secret, or insecure transport. Do not execute code, install dependencies, modify files, or access secrets/environment variables. Files conventionally used for secrets (.env, keys, certificates, and credential files) are out of scope: never read them or request their contents.
+First establish context: inspect top-level structure, the primary manifest or README, likely entry points, and a small number of core files. Investigate security issues beyond the deterministic categories: SQL/NoSQL/command injection, path traversal, SSRF, XSS, insecure deserialization, authentication/session/JWT mistakes, broken authorization/IDOR, sensitive logging, hard-coded credentials, insecure transport, unsafe file handling/uploads, dangerous CORS or security configuration, and clearly identifiable insecure cryptography. Also investigate suspicious behavior beyond the deterministic categories: keyboard/keylogging, microphone, camera or screen capture, clipboard, browser cookies/history/credentials, filesystem or document harvesting, telemetry/fingerprinting, location or device identifiers, arbitrary process execution, persistence/autostart, privilege escalation, downloading and executing code, reverse shells/remote control, obfuscation/evasion, cryptomining/resource abuse, and destructive file operations. For every suspicious capability, determine what information or capability is accessed, where it originates, where it is stored or sent, whether it leaves the machine, and whether it is consistent with the application's apparent purpose. Then investigate the deterministic candidate leads. They are not confirmed problems. Candidate flows are especially weak leads: a correlation score measures structural proximity only and never establishes data transfer. Follow relevant imports and data flows where needed. Determine sensitive data/capabilities, source, destination, storage/logging, external services, and whether behavior matches the app's apparent purpose. Distinguish live behavior from examples, docs, tests, dead code, and unused imports. Ordinary process launching, password/credential input, microphone access, and network access are behaviors, not security issues. Do not report one as a security issue merely because an API is present; require evidence such as user-controlled shell input, credential exfiltration, sensitive logging, a hard-coded secret, or insecure transport. Do not execute code, install dependencies, modify files, or access secrets/environment variables. Files conventionally used for secrets (.env, keys, certificates, and credential files) are out of scope: never read them or request their contents.
 
 Your execution budget is enforced independently: at most ${MAX_AGENT_LLM_TURNS} LLM turns, ${MAX_AGENT_TOOL_CALLS} tool calls, ${MAX_AGENT_FILES} unique content files, and ${MAX_AGENT_READ_BYTES / 1024} KB of repository content. Prioritize evidence.
 
 Return ONLY one valid JSON object, with no Markdown fence or commentary, in exactly this shape:
-{"status":"completed","summary":"string or null","overallRisk":"none|low|medium|high|critical|unknown","repositoryContext":{"purpose":"string (optional)","applicationType":"string (optional)","mainComponents":["string"],"filesInspected":["string"]},"suspiciousBehaviors":[{"category":"string","file":"string","line":1,"description":"string","reason":"string","confidence":0.0,"relatedFiles":["string"]}],"securityIssues":[{"category":"string","file":"string","line":1,"description":"string","severity":"low|medium|high|critical","confidence":0.0,"relatedFiles":["string"]}],"externalServices":[{"host":"string","purpose":"string","file":"string","line":1,"dataSent":["string"]}],"notes":["string"]}
-All four arrays are required, even when empty. Confidence is a number from 0 through 1. The required suspiciousBehaviors item fields are category, file, description, reason, and confidence. The required securityIssues item fields are category, file, description, severity, and confidence. line and relatedFiles are optional. Every externalServices field is optional. Omit unknown optional fields instead of returning null. repositoryContext itself is optional.`
+{"status":"completed","verdict":"concerns_found|no_major_concerns_found|inconclusive","summary":"string or null","overallRisk":"none|low|medium|high|critical|unknown","repositoryContext":{"purpose":"string (optional)","applicationType":"string (optional)","mainComponents":["string"]},"suspiciousBehaviors":[{"category":"string","description":"string","capability":"string","dataAccessed":["string"],"destination":"string","leavesDevice":true,"expectedForApplication":false,"whySuspicious":"string","file":"string","line":1,"relatedFiles":["string"],"confidence":0.0}],"securityIssues":[{"category":"string","file":"string","line":1,"description":"string","severity":"low|medium|high|critical","confidence":0.0,"relatedFiles":["string"]}],"externalServices":[{"host":"string","purpose":"string","file":"string","line":1,"dataSent":["string"]}],"notes":["string"]}
+All four arrays are required, even when empty. A verdict of no_major_concerns_found means only "No major concerns found in the inspected code." It never means the repository is safe; use inconclusive when the inspected subset cannot support a conclusion. Do not claim that the repository is safe. Do not include inspected-file counts or paths: CodeVet supplies trusted coverage separately. Confidence is a number from 0 through 1. The required suspiciousBehaviors item fields are category, description, capability, whySuspicious, file, and confidence. dataAccessed, destination, leavesDevice, expectedForApplication, line, and relatedFiles are optional. The expectedForApplication field must be a boolean based on the repository's apparent purpose; omit it when that cannot be determined. The leavesDevice field means the accessed data or behavior is sent off the device; omit it when unknown. The required securityIssues item fields are category, file, description, severity, and confidence. line and relatedFiles are optional. Every externalServices field is optional. Omit unknown optional fields instead of returning null. repositoryContext itself is optional.`
 
 type AgentPromptEvidence = {
   inventory: RepositoryInventory
@@ -559,7 +585,10 @@ function boundedConfidence(value: unknown): number | undefined {
 }
 
 /** Strictly validate and bound all model-originated fields before persistence. */
-export function parseAgentOutput(stdout: string): AgentAnalysis {
+export function parseAgentOutput(
+  stdout: string,
+  coverage: AgentAnalysis['coverage'] = coverageForAgent(0)
+): AgentAnalysis {
   if (Buffer.byteLength(stdout) > MAX_AGENT_OUTPUT_BYTES) throw new Error('agent output too large')
   const start = stdout.indexOf('{')
   const end = stdout.lastIndexOf('}')
@@ -567,9 +596,9 @@ export function parseAgentOutput(stdout: string): AgentAnalysis {
   const raw: unknown = JSON.parse(stdout.slice(start, end + 1))
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('agent JSON object required')
   const value = raw as Record<string, unknown>
-  const allowed = new Set(['status', 'summary', 'overallRisk', 'repositoryContext', 'suspiciousBehaviors', 'securityIssues', 'externalServices', 'notes'])
+  const allowed = new Set(['status', 'verdict', 'summary', 'overallRisk', 'repositoryContext', 'suspiciousBehaviors', 'securityIssues', 'externalServices', 'notes'])
   if (Object.keys(value).some((key) => !allowed.has(key))) throw new Error('unknown agent fields')
-  if (value.status !== 'completed' || !['none', 'low', 'medium', 'high', 'critical', 'unknown'].includes(String(value.overallRisk))) throw new Error('invalid agent status or risk')
+  if (value.status !== 'completed' || !['concerns_found', 'no_major_concerns_found', 'inconclusive'].includes(String(value.verdict)) || !['none', 'low', 'medium', 'high', 'critical', 'unknown'].includes(String(value.overallRisk))) throw new Error('invalid agent status, verdict, or risk')
   const summary = value.summary === null ? null : boundedString(value.summary)
   const notes = boundedStringArray(value.notes)
   if (summary === undefined || !notes) throw new Error('invalid summary or notes')
@@ -589,9 +618,27 @@ export function parseAgentOutput(stdout: string): AgentAnalysis {
         if (!['low', 'medium', 'high', 'critical'].includes(String(severity))) throw new Error('invalid severity')
         return { category, file, ...(line ? { line } : {}), description, severity: severity as 'low' | 'medium' | 'high' | 'critical', confidence, ...(relatedFiles ? { relatedFiles } : {}) }
       }
-      const reason = boundedString(x.reason)
-      if (!reason) throw new Error('invalid reason')
-      return { category, file, ...(line ? { line } : {}), description, reason, confidence, ...(relatedFiles ? { relatedFiles } : {}) }
+      const capability = boundedString(x.capability)
+      const whySuspicious = boundedString(x.whySuspicious)
+      const dataAccessed = x.dataAccessed == null ? undefined : boundedStringArray(x.dataAccessed)
+      const destination = x.destination == null ? undefined : boundedString(x.destination, 1_000)
+      const leavesDevice = x.leavesDevice == null ? undefined : x.leavesDevice
+      const expectedForApplication = x.expectedForApplication == null ? undefined : x.expectedForApplication
+      if (!capability || !whySuspicious || (x.dataAccessed != null && !dataAccessed) || (x.destination != null && !destination) || (leavesDevice !== undefined && typeof leavesDevice !== 'boolean') || (expectedForApplication !== undefined && typeof expectedForApplication !== 'boolean')) throw new Error('invalid suspicious behavior')
+      return {
+        category,
+        description,
+        capability,
+        ...(dataAccessed ? { dataAccessed } : {}),
+        ...(destination ? { destination } : {}),
+        ...(leavesDevice !== undefined ? { leavesDevice } : {}),
+        ...(expectedForApplication !== undefined ? { expectedForApplication } : {}),
+        whySuspicious,
+        file,
+        ...(line ? { line } : {}),
+        ...(relatedFiles ? { relatedFiles } : {}),
+        confidence,
+      }
     })
   }
   const suspiciousBehaviors = list(value.suspiciousBehaviors, false) as AgentAnalysis['suspiciousBehaviors']
@@ -609,11 +656,11 @@ export function parseAgentOutput(stdout: string): AgentAnalysis {
   if (value.repositoryContext != null) {
     if (typeof value.repositoryContext !== 'object' || Array.isArray(value.repositoryContext)) throw new Error('invalid context')
     const x = value.repositoryContext as Record<string, unknown>
-    const purpose = x.purpose == null ? undefined : boundedString(x.purpose), applicationType = x.applicationType == null ? undefined : boundedString(x.applicationType), mainComponents = x.mainComponents == null ? undefined : boundedStringArray(x.mainComponents), filesInspected = x.filesInspected == null ? undefined : boundedStringArray(x.filesInspected, MAX_AGENT_FILES)
-    if ((x.purpose != null && !purpose) || (x.applicationType != null && !applicationType) || (x.mainComponents != null && !mainComponents) || (x.filesInspected != null && !filesInspected)) throw new Error('invalid context fields')
-    repositoryContext = { ...(purpose ? { purpose } : {}), ...(applicationType ? { applicationType } : {}), ...(mainComponents ? { mainComponents } : {}), ...(filesInspected ? { filesInspected } : {}) }
+    const purpose = x.purpose == null ? undefined : boundedString(x.purpose), applicationType = x.applicationType == null ? undefined : boundedString(x.applicationType), mainComponents = x.mainComponents == null ? undefined : boundedStringArray(x.mainComponents)
+    if (Object.keys(x).some((key) => !['purpose', 'applicationType', 'mainComponents'].includes(key)) || (x.purpose != null && !purpose) || (x.applicationType != null && !applicationType) || (x.mainComponents != null && !mainComponents)) throw new Error('invalid context fields')
+    repositoryContext = { ...(purpose ? { purpose } : {}), ...(applicationType ? { applicationType } : {}), ...(mainComponents ? { mainComponents } : {}) }
   }
-  return { status: 'completed', summary, overallRisk: value.overallRisk as AgentAnalysis['overallRisk'], ...(repositoryContext ? { repositoryContext } : {}), suspiciousBehaviors, securityIssues, externalServices, notes }
+  return { status: 'completed', verdict: value.verdict as AgentAnalysis['verdict'], summary, overallRisk: value.overallRisk as AgentAnalysis['overallRisk'], coverage, ...(repositoryContext ? { repositoryContext } : {}), suspiciousBehaviors, securityIssues, externalServices, notes }
 }
 
 /**
@@ -1123,17 +1170,17 @@ async function runAgentAnalysis(
     const result = await handle
     if (result.timedOut) {
       console.log(`[${uid}] AI analysis failed: timeout`)
-      return emptyAgentAnalysis('timeout', 'Agent analysis timed out')
+      return emptyAgentAnalysis('timeout', scannerResult.inventory.fileCount, 'Agent analysis timed out')
     }
     if (outputExceeded || result.truncated || Buffer.byteLength(result.stdout) > MAX_AGENT_OUTPUT_BYTES) {
       console.log(`[${uid}] AI analysis failed: output limit`)
-      return emptyAgentAnalysis('failed', 'Agent returned invalid structured output')
+      return emptyAgentAnalysis('failed', scannerResult.inventory.fileCount, 'Agent returned invalid structured output')
     }
     if (result.exitCode !== 0) {
       const diagnostic = redactSensitiveText(result.stderr).trim().slice(0, 1_000)
       console.log(`[${uid}] AI analysis failed: process error (exit ${result.exitCode})`)
       if (diagnostic) console.error(`[${uid}] AI analysis stderr: ${diagnostic}`)
-      return emptyAgentAnalysis('failed', 'Agent analysis failed')
+      return emptyAgentAnalysis('failed', scannerResult.inventory.fileCount, 'Agent analysis failed')
     }
     try {
       const metricsRaw = await sandbox.files.read('/tmp/codevet-agent-metrics.json')
@@ -1148,7 +1195,13 @@ async function runAgentAnalysis(
       ) {
         throw new Error('invalid agent metrics')
       }
-      const filesInspected = (metrics as { filesInspected: string[] }).filesInspected
+      const inspectedFilesRaw = (metrics as { filesInspected: string[] }).filesInspected
+      const filesInspected = [...new Set(inspectedFilesRaw.map((file) => {
+        const prefix = '/workspace/repo/'
+        if (!file.startsWith(prefix)) throw new Error('invalid inspected file path')
+        return file.slice(prefix.length)
+      }))]
+      if (filesInspected.length > MAX_AGENT_FILES) throw new Error('invalid inspected file count')
       const preloadedFiles =
         typeof (metrics as { preloadedFiles?: unknown }).preloadedFiles === 'number'
           ? (metrics as { preloadedFiles: number }).preloadedFiles
@@ -1157,7 +1210,10 @@ async function runAgentAnalysis(
         typeof (metrics as { toolCalls?: unknown }).toolCalls === 'number'
           ? (metrics as { toolCalls: number }).toolCalls
           : 0
-      const analysis = parseAgentOutput(result.stdout)
+      const analysis = parseAgentOutput(
+        result.stdout,
+        coverageForAgent(scannerResult.inventory.fileCount, filesInspected)
+      )
       const message =
         `[${uid}] AI analysis completed; supplied ${preloadedFiles} source file(s), ` +
         `${toolCalls} model tool call(s)`
@@ -1177,12 +1233,12 @@ async function runAgentAnalysis(
           ? error.message
           : 'unknown validation error'
       console.log(`[${uid}] AI analysis failed: invalid output (${reason.slice(0, 200)})`)
-      return emptyAgentAnalysis('failed', 'Agent returned invalid structured output')
+      return emptyAgentAnalysis('failed', scannerResult.inventory.fileCount, 'Agent returned invalid structured output')
     }
   } catch {
     // Do not expose provider errors, stderr, prompts, or raw model output.
     console.log(`[${uid}] AI analysis failed`)
-    return emptyAgentAnalysis('failed', 'Agent analysis failed')
+    return emptyAgentAnalysis('failed', scannerResult.inventory.fileCount, 'Agent analysis failed')
   }
 }
 

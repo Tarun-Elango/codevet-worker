@@ -160,6 +160,10 @@ export async function processRequest(pool, channel, msg, job) {
             aiSecurityIssues: scannerResult.agentAnalysis?.securityIssues ?? [],
             suspiciousBehaviors: scannerResult.agentAnalysis?.suspiciousBehaviors ?? [],
             externalServices: scannerResult.agentAnalysis?.externalServices ?? [],
+            // Preserve the scoped AI verdict and trusted coverage alongside the
+            // existing arrays so clients do not mistake a risk of "none" for a
+            // repository-wide safety guarantee.
+            agentAnalysis: scannerResult.agentAnalysis,
             candidateFlows: scannerResult.candidateFlows,
         };
         await lockClient.query(`
