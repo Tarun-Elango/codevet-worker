@@ -680,17 +680,21 @@ export function parseAgentOutput(
   }
   // A model cannot turn a tiny sample of a very large repository into a
   // repository-level clean result. Preserve its findings and risk assessment,
-  // but fail closed on the verdict when trusted coverage is below one percent
-  // and more than 1,000 files remain unread.
+  // but fail closed when more than 1,000 files remain unread and trusted
+  // coverage meets neither the absolute nor relative minimum.
   const uninspectedFiles = Math.max(0, coverage.repositoryFiles - coverage.filesInspected)
   const coverageRatio = coverage.repositoryFiles > 0
     ? coverage.filesInspected / coverage.repositoryFiles
     : 1
+  const enoughAbsoluteCoverage = coverage.filesInspected >= 50
+  const enoughRelativeCoverage = coverageRatio >= 0.005
   const verdict = value.verdict === 'no_major_concerns_found' &&
-    uninspectedFiles > 1_000 && coverageRatio < 0.01
+    uninspectedFiles > 1_000 &&
+    !enoughAbsoluteCoverage &&
+    !enoughRelativeCoverage
     ? 'inconclusive'
     : value.verdict as AgentAnalysis['verdict']
-  const coverageNote = 'The trusted coverage check changed the AI verdict to inconclusive because less than 1% of a large repository was inspected.'
+  const coverageNote = 'The trusted coverage check changed the AI verdict to inconclusive because too little of a large repository was inspected.'
   const coverageNotes = verdict !== value.verdict
     ? notes.length < MAX_AGENT_ITEMS
       ? [...notes, coverageNote]

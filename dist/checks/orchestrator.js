@@ -1,9 +1,23 @@
-import { SCANNER_VERSION, configuredAgent, validatedCloneUrl } from './analysis.js';
-import { runSandboxScan } from './sandbox.js';
-/** Coordinate validated scan inputs with the isolated sandbox implementation. */
+import { SCANNER_VERSION, configuredAgent, validatedCloneUrl, } from './analysis.js';
+import { destroyScannerSandbox, runSandboxStep1, } from './sandbox_step1.js';
+import { runSandboxStep2 } from './sandbox_step2.js';
+/** Coordinate validated input, the deterministic scan, optional AI enrichment,
+ * and the lifetime of the one shared isolated sandbox. */
 export async function runScannerContainer(job) {
     const commitSha = job.commitSha.toLowerCase();
     const repoUrl = validatedCloneUrl(job.repoUrl, commitSha);
-    return runSandboxScan({ ...job, commitSha, repoUrl }, configuredAgent());
+    const agent = configuredAgent();
+    const { sandbox, scannerResult } = await runSandboxStep1({ ...job, commitSha, repoUrl });
+    try {
+        if (!agent) {
+            console.log(`[${job.uid}] AI analysis skipped: no configured API key`);
+            return { ...scannerResult, agentAnalysis: null };
+        }
+        const agentAnalysis = await runSandboxStep2(sandbox, job.uid, scannerResult, agent);
+        return { ...scannerResult, agentAnalysis };
+    }
+    finally {
+        await destroyScannerSandbox(sandbox, job.uid);
+    }
 }
 export { SCANNER_VERSION };
