@@ -1,36 +1,45 @@
 import { Sandbox } from 'railway'
 
+import { PI_AGENT_INTEGRITY, PI_AGENT_PACKAGE, PI_AGENT_VERSION, parseScannerOutput } from './analysis.js'
 import {
+  CONTEXT_LINES_EACH_SIDE,
+  MAX_AGENT_GREP_COLUMNS,
+  MAX_AGENT_GREP_GLOB_BYTES,
+  MAX_AGENT_GREP_MATCHES_PER_FILE,
   MAX_AGENT_GREP_OUTPUT_BYTES,
+  MAX_AGENT_GREP_PATTERN_BYTES,
+  MAX_AGENT_GREP_PROCESS_OUTPUT_MULTIPLIER,
   MAX_AGENT_GREP_RESULTS,
   MAX_AGENT_LIST_RESULTS,
   MAX_AGENT_LLM_TURNS,
-  MAX_AGENT_READ_BYTES,
-  MAX_AGENT_SINGLE_FILE_READ_BYTES,
-  MAX_AGENT_TOOL_CALLS,
-  MAX_INVENTORY_FILES,
-  MAX_MANIFESTS,
-  MAX_SECRET_FINDINGS,
   MAX_AGENT_OUTPUT_BYTES,
   MAX_AGENT_PRELOADED_BYTES,
   MAX_AGENT_PRELOADED_FILES,
+  MAX_AGENT_READ_BYTES,
+  MAX_AGENT_SINGLE_FILE_READ_BYTES,
+  MAX_AGENT_TOOL_CALLS,
+  MAX_CONTEXT_CANDIDATES,
+  MAX_CONTEXT_LINE_CHARACTERS,
+  MAX_DISCOVERY_CANDIDATES_PER_CATEGORY,
+  MAX_DISCOVERY_COLUMNS,
+  MAX_DISCOVERY_FILE_BYTES,
+  MAX_DISCOVERY_MATCHES_PER_FILE,
+  MAX_INVENTORY_FILES,
+  MAX_MANIFEST_CONTENT_BYTES,
+  MAX_MANIFESTS,
+  MAX_SANDBOX_OUTPUT_BYTES,
+  MAX_SECRET_FILE_BYTES,
+  MAX_SECRET_FINDINGS,
+  MAX_SELECTED_CANDIDATES_PER_CATEGORY,
   MIN_FILES_TO_INSPECT,
-  PI_AGENT_INTEGRITY,
-  PI_AGENT_PACKAGE,
-  PI_AGENT_VERSION,
+  SANDBOX_EXEC_START_RETRIES,
+  SANDBOX_IDLE_TIMEOUT_MINUTES,
+  SANDBOX_START_TIMEOUT_MS,
+  SANDBOX_STATUS_POLL_MS,
   SCANNER_TIMEOUT_SEC,
-  parseScannerOutput,
-} from './analysis.js'
+} from './limits.js'
 import type { ScannerResult } from './analysis.js'
 
-// Sandbox lifecycle limits apply only to the isolated execution step.
-const SANDBOX_START_TIMEOUT_MS = 60_000
-const SANDBOX_STATUS_POLL_MS = 250
-const SANDBOX_EXEC_START_RETRIES = 5
-const MAX_DISCOVERY_CANDIDATES_PER_CATEGORY = 250
-const MAX_CONTEXT_CANDIDATES = 1_000
-const MAX_SELECTED_CANDIDATES_PER_CATEGORY = 125
-const MAX_SANDBOX_OUTPUT_BYTES = 128 * 1024 * 1024
 
 /**
  * STEP C — Build the disposable scanner environment.
@@ -274,8 +283,8 @@ export const scannerTemplate = Sandbox.template()
           glob: Type.Optional(Type.String({ description: "Optional file glob such as *.ts" })),
         }),
         async execute(_toolCallId, params, signal) {
-          if (!params.pattern || Buffer.byteLength(params.pattern) > 500) throw new Error("grep pattern is empty or too large")
-          if (params.glob && Buffer.byteLength(params.glob) > 300) throw new Error("grep glob is too large")
+          if (!params.pattern || Buffer.byteLength(params.pattern) > ${MAX_AGENT_GREP_PATTERN_BYTES}) throw new Error("grep pattern is empty or too large")
+          if (params.glob && Buffer.byteLength(params.glob) > ${MAX_AGENT_GREP_GLOB_BYTES}) throw new Error("grep glob is too large")
           const target = await repositoryTarget(params.path ?? REPOSITORY_ROOT)
           if (!target) throw new Error("grep path is outside the readable repository scope")
           if (isGeneratedPath(target)) throw new Error("grep excludes generated and dependency directories")
@@ -284,7 +293,7 @@ export const scannerTemplate = Sandbox.template()
 
           const args = [
             "--json", "--hidden", "--no-ignore", "--max-filesize", String(MAX_SINGLE_FILE_READ_BYTES),
-            "--max-columns", "2000", "--max-count", "20",
+            "--max-columns", String(${MAX_AGENT_GREP_COLUMNS}), "--max-count", String(${MAX_AGENT_GREP_MATCHES_PER_FILE}),
           ]
           if (params.glob) args.push("--glob", params.glob)
           args.push(
@@ -305,7 +314,7 @@ export const scannerTemplate = Sandbox.template()
           let killedForLimit = false
           const stopIfNeeded = (chunk) => {
             processBytes += chunk.length
-            if (processBytes > MAX_GREP_OUTPUT_BYTES * 8) {
+            if (processBytes > MAX_GREP_OUTPUT_BYTES * ${MAX_AGENT_GREP_PROCESS_OUTPUT_MULTIPLIER}) {
               killedForLimit = true
               child.kill("SIGKILL")
             }
@@ -700,7 +709,7 @@ export async function runSandboxStep1(
   try {
     sandbox = await Sandbox.create(scannerTemplate, {
       // Destroy it fairly quickly if your worker crashes before cleanup.
-      idleTimeoutMinutes: 5,
+      idleTimeoutMinutes: SANDBOX_IDLE_TIMEOUT_MINUTES,
 
       // Railway's ISOLATED mode has public egress but cannot access this
       // environment's private network. Git itself is restricted to HTTPS.
@@ -837,7 +846,7 @@ export async function runSandboxStep1(
 
           path=$(printf '%s' "$file" | sed 's#^\\./##')
           encoded_path=$(printf '%s' "$path" | base64 | tr -d '\\n')
-          content=$(head -c 20000 -- "$file" | base64 | tr -d '\\n')
+          content=$(head -c ${MAX_MANIFEST_CONTENT_BYTES} -- "$file" | base64 | tr -d '\\n')
           printf 'CODEVET_MANIFEST:%s:%s\\n' "$encoded_path" "$content"
           emitted_manifests=$((emitted_manifests + 1))
         done
@@ -852,7 +861,7 @@ export async function runSandboxStep1(
         const crypto = require('node:crypto')
 
         const maxFindings = Number(process.argv[2])
-        const maxFileBytes = 1024 * 1024
+        const maxFileBytes = ${MAX_SECRET_FILE_BYTES}
         // This ephemeral key is never emitted. HMAC avoids making a weak
         // password recoverable through an offline SHA-256 dictionary attack.
         const fingerprintKey = crypto.randomBytes(32)
@@ -994,12 +1003,17 @@ const capabilityApi = {
   tracking_telemetry: /(?:analytics|telemetry|tracking)\\s*(?:\\.|\\(|\\[)|(?:track|identify|capture|fingerprint)\\s*\\(/i,
   // Deliberately exclude bare words such as camera, Documents, hostname,
   // process, cookies, and device_id. Those are keywords, not API evidence.
-  sensitive_system_access: /getDisplayMedia|screenCapture|desktopCapturer|screencapture|document\\.cookie|browser\\.(?:cookies|history)|os\\.(?:homedir|hostname)|process\\.(?:env|platform)|\\/proc\\/|\\/dev\\//i,
-  credential_handling: /(?:querySelector|getElementById|FormData|localStorage|sessionStorage|\\.value\\b)[^\\n]{0,100}\\b(?:password|passwd|credential|token|api[_-]?key|secret)\\b|\\b(?:password|passwd|credential|token|api[_-]?key|secret)\\b[^\\n]{0,100}(?:\\.value\\b|querySelector|FormData|localStorage|sessionStorage)/i,
-  security_signal: /(?:query|execute|raw|execSQL|createQuery|innerHTML|document\\.write|dangerouslySetInnerHTML|readFile|writeFile|sendFile|pickle\\.load|yaml\\.load|unserialize|ObjectInputStream|BinaryFormatter|jwt\\.decode|verify_signature|createHash|md5|sha1|Access-Control-Allow-Origin)/i,
-  supply_chain: /(?:preinstall|postinstall|pull_request_target|write-all|curl|wget|Invoke-WebRequest|\\/dev\\/tcp|bash\\s+-i|b64decode|FromBase64String|LaunchAgents|crontab|schtasks|stratum\\+tcp|xmrig|coinhive|rm\\s+-rf|Remove-Item)/i,
+  sensitive_system_access: /getDisplayMedia|screenCapture|desktopCapturer|screencapture|navigator\\.mediaDevices\\.getUserMedia\\s*\\([^)]*video|AVCapture(?:Device|Session)|document\\.cookie|browser\\.(?:cookies|history)|chrome\\.(?:cookies|history)|(?:os\\.|process\\.)?(?:homedir|hostname|platform|arch)\\s*\\(|\\/proc\\/|\\/dev\\/(?:input|video)|readdir(?:Sync)?\\s*\\([^)]*(?:\\.ssh|Library\\/Keychains|AppData|Documents)/i,
+  credential_handling: /(?:navigator\\.credentials|browser\\.(?:cookies|passwords)|chrome\\.(?:cookies|passwords)|keytar\\.(?:getPassword|findCredentials)|CredentialManager|\\.ssh|id_(?:rsa|dsa|ecdsa|ed25519)|(?:\\.env|keychain|Keychains)\\b|(?:querySelector|getElementById|FormData|localStorage|sessionStorage|\\.value\\b)[^\\n]{0,100}\\b(?:password|passwd|credential|token|api[_-]?key|secret)\\b)/i,
+  // Only major-security sinks/configurations belong here. Ordinary DB, file,
+  // hash, and HTML APIs are intentionally not standalone security leads.
+  security_signal: /(?:\\b(?:eval|exec|execFile|spawn|os\\.system|subprocess\\.(?:run|Popen|call))\\s*\\([^\\n]*(?:req(?:uest)?\\.|ctx\\.|params|query|body|argv)|new\\s+Function\\s*\\([^\\n]*(?:req(?:uest)?\\.|ctx\\.|params|query|body)|(?:pickle\\.loads?|yaml\\.load|unserialize|ObjectInputStream|BinaryFormatter)\\s*\\([^\\n]*(?:req(?:uest)?\\.|ctx\\.|params|query|body)|(?:jwt\\.(?:verify|decode)|verify_signature|algorithms?)\\b[^\\n]*(?:none|false|0)|(?:isAdmin|admin|root|privileged)\\b[^\\n]*(?:true|allow|bypass)|(?:pull_request_target|permissions\\s*:\\s*write-all)|(?:req(?:uest)?\\.|ctx\\.|params|query|body)[^\\n]{0,180}(?:\\.query|execute|raw|readFile|sendFile|createReadStream)\\s*\\()/i,
+  supply_chain: /(?:preinstall|postinstall|prepare)[^\\n]{0,180}(?:curl|wget|Invoke-WebRequest|fetch|b64decode|FromBase64String|eval|exec|spawn)|(?:fetch|curl|wget)[^\\n]{0,180}(?:exec|spawn|bash|sh|chmod\\s+\\+x)|(?:eval|Function)\\s*\\([^\\n]*(?:atob|b64decode|FromBase64String)|LaunchAgents|crontab|systemctl\\s+enable|schtasks|stratum\\+tcp|xmrig|coinhive/i,
 }
-const sourceExpression = /(?:\\.value\\b|FormData\\s*\\(|(?:req(?:uest)?\\.)?(?:body|params|query)\\b|process\\.env\\b|(?:localStorage|sessionStorage)\\.getItem\\s*\\(|document\\.cookie|os\\.(?:hostname|homedir)\\s*\\(|navigator\\.(?:clipboard|mediaDevices)|(?:event|e)\\.key\\b)/i
+const sourceExpression = /(?:\\.value\\b|FormData\\s*\\(|(?:req(?:uest)?\\.|ctx\\.)?(?:body|params|query)\\b|process\\.env\\b|(?:localStorage|sessionStorage)\\.getItem\\s*\\(|document\\.cookie|os\\.(?:hostname|homedir)\\s*\\(|navigator\\.(?:clipboard|mediaDevices)|(?:event|e)\\.key\\b)/i
+const majorSink = /(?:\\b(?:eval|exec|execFile|spawn|os\\.system|subprocess\\.(?:run|Popen|call))\\s*\\(|new\\s+Function\\s*\\(|pickle\\.loads?|yaml\\.load|unserialize|ObjectInputStream|BinaryFormatter|\\.query\\s*\\(|\\.execute\\s*\\(|\\.raw\\s*\\(|readFile(?:Sync)?\\s*\\(|sendFile\\s*\\(|createReadStream\\s*\\()/i
+const externalInput = /(?:req(?:uest)?\\.|ctx\\.)?(?:body|params|query)\\b|(?:request|http).*?(?:body|input|payload)/i
+const inputDependentSink = /(?:\\b(?:eval|exec|execFile|spawn|os\\.system|subprocess\\.(?:run|Popen|call))\\s*\\(|new\\s+Function\\s*\\(|pickle\\.loads?|yaml\\.load|unserialize|ObjectInputStream|BinaryFormatter|\\.query\\s*\\(|\\.execute\\s*\\(|\\.raw\\s*\\(|readFile(?:Sync)?\\s*\\(|sendFile\\s*\\(|createReadStream\\s*\\()/i
 const sensitiveSourceCategory = new Set([
   'keyboard_input', 'microphone_access', 'clipboard_access',
   'credential_handling', 'sensitive_system_access',
@@ -1009,11 +1023,17 @@ function score(candidate) {
   const isCapabilityApi = capabilityApi[category].test(text)
   const isSourceExpression = sourceExpression.test(text)
   const isLowConfidence = lowConfidencePath.test(candidate.file)
+  const isMajorCorrelation = category === 'security_signal' && externalInput.test(text) && majorSink.test(text)
+  const isDownloadExecute = category === 'supply_chain' && capabilityApi.supply_chain.test(text)
   let value = 0
 
   // Prefer concrete operations and data reads over a generic identifier.
   if (isCapabilityApi) value += 5
   if (isSourceExpression) value += 4
+  // Same-line combinations are strong deterministic evidence. They still do
+  // not prove a flow; Pi must validate the surrounding code.
+  if (isMajorCorrelation) value += 30
+  if (isDownloadExecute) value += 25
   if (entrypointPath.test(candidate.file)) value += 3
   if (sourceFile.test(candidate.file) && !isLowConfidence) value += 2
   if (!isCapabilityApi && !isSourceExpression) value -= 3
@@ -1024,6 +1044,11 @@ function score(candidate) {
   candidate.capabilityApi = isCapabilityApi
   candidate.sourceExpression = isSourceExpression
   candidate.networkSink = networkSink.test(text)
+  candidate.majorCorrelation = isMajorCorrelation
+  candidate.downloadExecute = isDownloadExecute
+  candidate.majorSink = majorSink.test(text)
+  candidate.externalInput = externalInput.test(text)
+  candidate.requiresInputCorrelation = inputDependentSink.test(text)
   return value
 }
 const best = []
@@ -1061,9 +1086,9 @@ RANK_CATEGORY
             --hidden \
             --no-ignore \
             --ignore-case \
-            --max-filesize 5M \
-            --max-columns 500 \
-            --max-count 10 \
+            --max-filesize ${MAX_DISCOVERY_FILE_BYTES} \
+            --max-columns ${MAX_DISCOVERY_COLUMNS} \
+            --max-count ${MAX_DISCOVERY_MATCHES_PER_FILE} \
             --glob '!**/.git/**' \
             --glob '!**/node_modules/**' \
             --glob '!**/vendor/**' \
@@ -1087,15 +1112,17 @@ RANK_CATEGORY
         }
 
         run_rg keyboard_input -e 'keylog(ger|ging)?|keystroke|keypress|keydown|keyup|globalShortcut|RegisterHotKey'
-        run_rg microphone_access -e 'microphone|getUserMedia|mediaDevices|MediaRecorder|micPermission|AVAudioRecorder|AVAudioEngine|AVCapture(Device|Session)|AudioRecord|RECORD_AUDIO|pyaudio|sounddevice'
-        run_rg sensitive_system_access -e 'getDisplayMedia|camera|CAMERA|screenCapture|desktopCapturer|mouse(move|down|up|click)?|screencapture|cookies?|browser[_ -]?(history|profile|profiles)|saved[_ -]?passwords?|home(dir|directory)?|Documents|\\.env\\b|\\.ssh|ssh[_ -]?keys?|private[_ -]?keys?|certificates?|keychains?|hostname|mac[_ -]?address|hardware[_ -]?id|device[_ -]?id|gps|geo(location)?|process(es)?|running[_ -]?(processes|applications)|startup[_ -]?items?|launch[_ -]?agents?|registry[_ -]?Run|cron|systemd|sudo|administrator[_ -]?elevation|setuid|UAC|FFI|Win32|syscalls?|/proc|/dev'
+        run_rg microphone_access -e 'getUserMedia|mediaDevices|MediaRecorder|AVAudioRecorder|AVAudioEngine|AVCapture(Device|Session)|AudioRecord|RECORD_AUDIO|pyaudio|sounddevice'
+        run_rg sensitive_system_access -e 'getDisplayMedia|screenCapture|desktopCapturer|screencapture|mediaDevices\\.getUserMedia|AVCapture(Device|Session)|document\\.cookie|browser\\.(cookies|history)|chrome\\.(cookies|history)|os\\.(homedir|hostname|platform|arch)|process\\.(platform|arch)|/proc/|/dev/(input|video)|Library/Keychains|AppData|Documents'
         run_rg external_http -e 'fetch\\(|axios\\.|XMLHttpRequest|WebSocket|sendBeacon\\(|grpc|http(s)?\\.request|request\\(|requests?\\.(get|post|put|delete|request)|httpx|aiohttp|urllib|reqwest|HttpClient|OkHttp|Net::HTTP|https?://|\\bcurl\\b|\\bwget\\b|net\\.connect|socket'
         run_rg process_execution -e 'child_process|exec\\(|execFile\\(|spawn\\(|fork\\(|subprocess\\.(run|Popen|call)|os\\.system|eval\\(|Function\\(|powershell|osascript'
         run_rg clipboard_access -e 'clipboard|navigator\\.clipboard|pasteboard|xclip|pbcopy|GetClipboardData'
-        run_rg credential_handling -e '\\b(password|passwd|credential|token|api[_-]?key|secret|private[_-]?key)s?\\b'
-        run_rg tracking_telemetry -e 'analytics|telemetry|fingerprint|deviceId|machineId|tracking|usage[_ -]?collection'
-        run_rg security_signal -e 'query\\(|execute\\(|raw\\(|execSQL|createQuery|innerHTML|outerHTML|document\\.write|dangerouslySetInnerHTML|v-html|readFile|writeFile|createReadStream|createWriteStream|sendFile|pickle\\.loads?|yaml\\.load|unserialize|ObjectInputStream|BinaryFormatter|jwt\\.decode|verify_signature|algorithms?.*none|createHash|md5\\(|sha1\\(|Access-Control-Allow-Origin|credentials[[:space:]]*:[[:space:]]*true'
-        run_rg supply_chain -e 'preinstall|postinstall|pull_request_target|permissions[[:space:]]*:[[:space:]]*write-all|curl|wget|Invoke-WebRequest|/dev/tcp|bash[[:space:]]+-i|b64decode|FromBase64String|LaunchAgents|crontab|systemctl[[:space:]]+enable|schtasks|stratum\\+tcp|xmrig|coinhive|rm[[:space:]]+-rf|Remove-Item'
+        run_rg credential_handling -e 'navigator\\.credentials|browser\\.(cookies|passwords)|chrome\\.(cookies|passwords)|keytar\\.(getPassword|findCredentials)|CredentialManager|\\.ssh|id_(rsa|dsa|ecdsa|ed25519)|\\.env\\b|keychain|Keychains|password|credential|token|api[_-]?key|secret'
+        run_rg tracking_telemetry -e 'analytics\\.|telemetry\\.|tracking\\.|(track|identify|capture|fingerprint)\\('
+        # Major-security leads require a dangerous sink plus external input,
+        # unsafe auth configuration, or a privileged CI/auth pattern.
+        run_rg security_signal -e 'eval\\(|exec(File)?\\(|spawn\\(|os\\.system|subprocess\\.(run|Popen|call)|Function\\(|pickle\\.loads?|yaml\\.load|unserialize|ObjectInputStream|BinaryFormatter|jwt\\.(verify|decode)|verify_signature|algorithms?.*(none|false)|isAdmin|privileged|auth.*bypass|pull_request_target|permissions[[:space:]]*:[[:space:]]*write-all|req(uest)?\\.(body|params|query)|ctx\\.(body|params|query)|\\.(query|execute|raw)\\(|readFile(Sync)?\\(|sendFile\\(|createReadStream\\('
+        run_rg supply_chain -e 'preinstall|postinstall|prepare|pull_request_target|permissions[[:space:]]*:[[:space:]]*write-all|LaunchAgents|crontab|systemctl[[:space:]]+enable|schtasks|curl|wget|Invoke-WebRequest|/dev/tcp|bash[[:space:]]+-i|b64decode|FromBase64String|stratum\\+tcp|xmrig|coinhive'
 
         # Rank across categories, then Pass 2: fetch +/- 25 lines only for
         # selected leads. Node is used only to read files; it never executes
@@ -1136,6 +1163,23 @@ for (const source of candidates) {
     source.score += 5
   }
 }
+// Nearby external input and a major sink are useful triage evidence, not a
+// claim that the value reaches the sink. This captures common multi-line
+// handler patterns while retaining a very small budget for unpaired input.
+for (const source of candidates) {
+  if (source.category !== 'security_signal' || !source.externalInput) continue
+  if (candidates.some((sink) => sink.category === 'security_signal' && sink.majorSink && sink.file === source.file && Math.abs(sink.line - source.line) <= 100)) {
+    source.score += 25
+    source.correlatedSecurity = true
+  }
+}
+for (const sink of candidates) {
+  if (sink.category !== 'security_signal' || !sink.majorSink) continue
+  if (candidates.some((source) => source.category === 'security_signal' && source.externalInput && source.file === sink.file && Math.abs(source.line - sink.line) <= 100)) {
+    sink.score += 25
+    sink.correlatedSecurity = true
+  }
+}
 for (const sink of candidates) {
   if (sink.category !== 'external_http' || !sink.networkSink) continue
   if (candidates.some((source) =>
@@ -1150,7 +1194,18 @@ const selected = []
 const selectedByCategory = new Map()
 for (const candidate of candidates) {
   const count = selectedByCategory.get(candidate.category) || 0
-  if (count >= categoryLimit) continue
+  // Generic contextual input is valuable only next to a relevant sink. Do
+  // not let it displace behavior evidence or strong major-security leads.
+  const weakSecurity = candidate.category === 'security_signal' && !candidate.majorSink && !candidate.majorCorrelation && !candidate.capabilityApi
+  // Unpaired request-input matches are generic context, not evidence.
+  if (weakSecurity && candidate.externalInput && !candidate.correlatedSecurity) continue
+  // SQL/file sinks and interpreters are major leads only when paired with
+  // external input. Static commands remain process-behavior evidence.
+  if (candidate.category === 'security_signal' && candidate.requiresInputCorrelation && !candidate.majorCorrelation && !candidate.correlatedSecurity) continue
+  const perCategoryLimit = candidate.category === 'security_signal'
+    ? (weakSecurity ? 10 : 60)
+    : candidate.category === 'supply_chain' ? 40 : 32
+  if (count >= Math.min(categoryLimit, perCategoryLimit)) continue
   selected.push(candidate)
   selectedByCategory.set(candidate.category, count + 1)
   if (selected.length >= limit) break
@@ -1166,12 +1221,12 @@ for (const candidate of selected) {
     target = fs.realpathSync(candidate.file)
     if (target !== root && !target.startsWith(root + path.sep)) continue
     const stat = fs.statSync(target)
-    if (!stat.isFile() || stat.size > 5 * 1024 * 1024) continue
+    if (!stat.isFile() || stat.size > ${MAX_DISCOVERY_FILE_BYTES}) continue
   } catch { continue }
   const file = path.relative(root, target).split(path.sep).join('/')
   let lines = requested.get(file)
   if (!lines) { lines = new Set(); requested.set(file, lines) }
-  for (let number = Math.max(1, candidate.line - 25); number <= candidate.line + 25; number += 1) lines.add(number)
+  for (let number = Math.max(1, candidate.line - ${CONTEXT_LINES_EACH_SIDE}); number <= candidate.line + ${CONTEXT_LINES_EACH_SIDE}; number += 1) lines.add(number)
 }
 const selectedFiles = new Set(requested.keys())
 function resolveLocalImport(from, specifier) {
@@ -1186,7 +1241,7 @@ for (const [file, wanted] of requested) {
     const content = rawContent.split(/\\r?\\n/)
     for (const lineNumber of [...wanted].sort((a, b) => a - b)) {
       const text = content[lineNumber - 1]
-      if (text !== undefined) process.stdout.write('CODEVET_CONTEXT:' + encode(file) + ':' + lineNumber + ':' + encode(text.slice(0, 500)) + '\\n')
+      if (text !== undefined) process.stdout.write('CODEVET_CONTEXT:' + encode(file) + ':' + lineNumber + ':' + encode(text.slice(0, ${MAX_CONTEXT_LINE_CHARACTERS})) + '\\n')
     }
     // Emit only structural import edges between selected evidence files. This
     // improves cross-file correlation without claiming a proven value flow.

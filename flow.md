@@ -170,18 +170,39 @@ The returned `ScannerResult` contains:
 
 The sandbox is destroyed in a `finally` block whether the scan succeeds, fails, times out, or is cancelled.
 
-## Pi agent limits and inputs
+## Step 1 limits: deterministic scan
 
-| Area | Limit / initial input | What it provides |
-|---|---|---|
-| Tools | `read`, `grep`, `find`, `ls` only; no repo code execution | Read-only repository inspection |
-| Scope | Non-sensitive files under `/workspace/repo`; `.git`, secrets, keys, and images blocked | Redacted source evidence |
-| Initial context | Deterministic findings and metadata (max 64 KB), plus up to 8 priority files (max 256 KB) | Starting leads, not a complete sample |
-| Inspection budget | 30 model turns, 80 tool calls, 4 MB total, 200 KB per file | Bounded deeper investigation |
-| Search/list limits | 200 grep matches / 32 KB per grep; 250 list results | Controlled search results |
-| Runtime/output | 300-second timeout; 256 KB output | Validated structured report or a non-fatal failure |
+`src/checks/sandbox_step1.ts` applies the following limits. The only Step 1 limit configurable through the environment is `CODEVET_SCANNER_TIMEOUT_SEC`: it defaults to 600 seconds and may be lowered or raised only to a maximum of 900 seconds. The remaining values below are fixed in the current source.
 
-The final report contains suspicious behaviors, security issues, external services, risk, confidence, and coverage. It is accepted only through the terminating `codevet_report` tool.
+| Area | Limit |
+|---|---:|
+| Sandbox startup / lifecycle | 60-second startup wait; 250 ms status polling; 5 execution-start retries; 5-minute idle destruction timeout |
+| Deterministic command output | 128 MB combined stdout ceiling |
+| File inventory | All files are counted; at most 100,000 paths are emitted |
+| Manifests | At most 1,000 manifests; first 20 KB of each is emitted |
+| Sensitive-file scan | At most 10,000 findings; files larger than 1 MB are not read |
+| Discovery search | Files up to 5 MB; 500 columns and 10 matches per file per category; at most 180 ranked leads per category |
+| Candidate selection | At most 200 total candidates and 60 configured per category (additional category caps: 60 major-security, 40 supply-chain, 32 other categories, 10 weak security context) |
+| Context extraction | Selected regular files up to 5 MB; match line plus ±25 lines; each emitted line is capped at 500 characters |
+
+Step 1 never executes repository code, dependencies, hooks, builds, or tests.
+
+## Step 2 limits and inputs: Pi analysis
+
+`src/checks/sandbox_step2.ts` runs Pi after Step 1 has been parsed. It receives the bounded deterministic prompt and the priority-path list, then runs with a cleared environment and the provider credential only for that Pi process.
+
+| Area | Limit / input |
+|---|---|
+| Runtime (**configurable**) | `CODEVET_AI_TIMEOUT_SEC`; default 300 seconds, maximum 300 seconds |
+| Process/report output (**configurable**) | `CODEVET_AI_MAX_OUTPUT_BYTES`; default and maximum 256 KB, including stdout and stderr; the structured report is subject to the same ceiling |
+| Prompt | Deterministic findings and metadata capped at 64 KB |
+| Initial repository context | Up to 8 priority files totaling 256 KB; files must be no larger than 200 KB. Metadata files are prioritized, and fallback discovery considers up to 32 candidate paths. |
+| Tools and scope | `read`, `grep`, `find`, and `ls`, plus the terminating `codevet_report`; existing non-sensitive, non-image paths below `/workspace/repo` only; `.git`, secret/key/certificate paths, escaping symlinks, dependencies, and generated directories are blocked as applicable |
+| Model inspection | At most 30 LLM turns, 80 tool calls, and 4 MB aggregate model-visible repository content |
+| Read / list operations | A single file is at most 200 KB; `find`/`ls` return at most 250 entries |
+| Grep | At most 200 redacted matches and 32 KB returned per call; input pattern is at most 500 bytes, glob at most 300 bytes, and ripgrep is killed after 256 KB of raw process output |
+
+The final report contains suspicious behaviors, security issues, external services, risk, confidence, and coverage. It is accepted only through the terminating `codevet_report` tool; invalid, timed-out, or oversized Step 2 output is non-fatal.
 
 
 todo:

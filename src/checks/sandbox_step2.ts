@@ -1,8 +1,4 @@
 import {
-  AGENT_SYSTEM_PROMPT,
-  AGENT_TIMEOUT_SEC,
-  MAX_AGENT_OUTPUT_BYTES,
-  MIN_FILES_TO_INSPECT,
   buildAgentFilePriorities,
   buildAgentPrompt,
   coverageForAgent,
@@ -10,6 +6,12 @@ import {
   parseAgentOutput,
   redactSensitiveText,
 } from './analysis.js'
+import {
+  AGENT_SYSTEM_PROMPT,
+  AGENT_TIMEOUT_SEC,
+  MAX_AGENT_OUTPUT_BYTES,
+  MIN_FILES_TO_INSPECT,
+} from './limits.js'
 import type { AgentAnalysis, ScannerResult } from './analysis.js'
 import type { ScannerSandbox } from './sandbox_step1.js'
 
