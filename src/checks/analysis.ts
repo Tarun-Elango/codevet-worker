@@ -241,7 +241,7 @@ type Manifest = {
 // Keep the agent runtime version in the scanner cache key. Changing the
 // pinned agent must not reuse results produced by a different agent build.
 export const PI_AGENT_PACKAGE = '@earendil-works/pi-coding-agent'
-export const PI_AGENT_VERSION = '0.85.2'
+export const PI_AGENT_VERSION = '0.85.1'
 export const PI_AGENT_INTEGRITY = 'sha512-FGRN+OHbWaefBPGaTggAdLjrIHW+s2PzLyglz/5dfLzb9of7uuXMXYC0fJIeZTw+shS32o2cuQ9jF7YSDuL/oQ=='
 export const SCANNER_VERSION = `v23-pi-${PI_AGENT_VERSION}`
 
