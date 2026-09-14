@@ -40,7 +40,7 @@ flowchart LR
   INV --> SEC["Local sensitive-file presence scan"]
   SEC --> RG1["rg discovery pass\n8 behavior categories"]
   RG1 --> RANK["Rank per category, then globally"]
-  RANK --> CTX["Read selected files only\n±25 lines of context"]
+  RANK --> CTX["Read selected files only\n±3 lines of context"]
   CTX --> OUT["Emit base64-framed\nCODEVET_* records"]
 ```
 
@@ -52,7 +52,7 @@ It does **not** run repository scripts, hooks, package managers, dependency inst
 
 ### 2. Inventory
 
-The scan counts all non-`.git` files and emits up to 5,000 file paths. It emits up to 100 known manifests, each truncated to 20 KB. This later produces:
+The scan counts all non-`.git` files and emits up to 100,000 file paths. It emits up to 100 metadata manifests needed for project/framework/entrypoint detection, each truncated to 20 KB. Lockfile dependency graphs are not transported. This later produces:
 
 - languages inferred from extensions;
 - package managers;
@@ -82,9 +82,9 @@ It never emits the secret value or sensitive-file contents. The HMAC key is gene
 - credential handling;
 - tracking/telemetry.
 
-Discovery excludes `.git`, dependencies/build output, `.env*`, and conventional secret/key files. It scans text files up to 5 MB and retains bounded, ranked leads per category. Matches are scored to prefer concrete APIs, source expressions, entrypoints, and non-test source files. Dedicated security and supply-chain categories cover likely injection, traversal, unsafe deserialization/JWT/crypto/CORS, install hooks, risky workflows, download-and-execute behavior, reverse shells, obfuscation, persistence, mining, and destructive commands.
+Discovery excludes `.git`, dependencies/build output, `.env*`, and conventional secret/key files. It scans text files up to 5 MB and retains bounded navigation leads per category. Leads are ranked as: download/execute, persistence, and obfuscation; possible sensitive egress; sensitive capabilities/data; unexpected process/filesystem/network activity; then context-dependent major-security sinks. Regex matches are never vulnerability conclusions.
 
-The scanner then selects at most 250 total candidates and at most 40 per category. Only those selected regular files (up to 1 MB) are read for context, and it emits selected match lines plus up to ±25 lines, with each line capped at 500 characters.
+The scanner selects at most 120 candidates and at most 40 per category (with smaller category caps). Selected regular files up to 5 MB contribute only the match line plus ±3 lines, each capped at 500 characters. Step 2 obtains useful context by reading prioritized files and using scoped grep.
 
 ## After the deterministic command
 
@@ -98,10 +98,10 @@ flowchart TD
   CA --> SA["Conservative static analysis"]
   SA --> B["Behavior evidence\nrisk: unknown"]
   SA --> N["Network-call evidence\ndestination if literal URL"]
-  SA --> SF["Security findings\nonly sensitive logging or likely user-controlled dynamic execution"]
-  B --> FL["Possible sensitive flows\nsource and network call in same file only"]
+  SA --> SF["Security sink navigation leads\nAI validation required"]
+  B --> FL["Possible sensitive-flow navigation leads\nsame file or direct import only"]
   N --> FL
-  SF --> SN["±30-line context snippets"]
+  SF --> SN["±3-line context snippets"]
   B --> SN
   N --> SN
   I --> RES["ScannerResult"]
@@ -117,9 +117,9 @@ flowchart TD
 Important interpretation rules:
 
 - API presence is normally behavior evidence, **not** a vulnerability.
-- Process execution becomes a high-severity finding only when a likely user-controlled value is passed to a shell/dynamic-code interpreter.
-- Credential input is normal behavior; a finding requires a sensitive logging call.
-- A `candidateFlow` is explicitly a **possible** flow. Correlation uses same-file evidence plus direct and short transitive import relationships between selected evidence files; it does not prove data transfer.
+- Process execution and credential input remain behavior/navigation evidence until Step 2 reads the code and validates what happens.
+- A `candidateFlow` is explicitly a **possible** flow. Correlation is limited to same-file or direct-import structure and does not prove data transfer.
+- Secret presence is the only deterministic product security check and is not included in the AI prompt.
 
 ## Optional Pi analysis in the same sandbox
 
@@ -148,7 +148,7 @@ Pi's tool extension enforces, rather than merely requests:
 - at most 30 LLM turns, 80 tool calls, 4 MB of model-visible repository content, 200 KB per file, and 250 list results; grep additionally returns at most 200 matches / 32 KB per call;
 - a 300-second process timeout and 256 KB combined output limit.
 
-The model receives capped deterministic findings and repository metadata (at most 64 KB), plus at most eight small, high-priority metadata/entrypoint/source files (at most 256 KB). These files are only an initial lead set, not a fixed sample or coverage boundary. Pi can traverse the full non-sensitive checkout and dynamically choose further files by following imports and data flows; aggregate byte, call, turn, file-size, and execution limits still apply. The final result must be submitted through the terminating `codevet_report` tool and is rejected if that tool was not used. Invalid, failed, timed-out, or oversized model output becomes a non-fatal `agentAnalysis` with `failed` or `timeout` status; deterministic results remain available.
+The model receives capped, ranked discovery leads and repository metadata (at most 64 KB), plus at most eight small, high-priority behavior/entrypoint/source files (at most 256 KB). These files are only an initial lead set, not a fixed sample or coverage boundary. Pi can traverse the full non-sensitive checkout and dynamically choose further files by following imports and data flows; aggregate byte, call, turn, file-size, and execution limits still apply. The final result must be submitted through the terminating `codevet_report` tool and is rejected if that tool was not used. Invalid, failed, timed-out, or oversized model output becomes a non-fatal `agentAnalysis` with `failed` or `timeout` status; deterministic results remain available.
 
 ## What `runScannerContainer` provides
 
@@ -160,7 +160,7 @@ The returned `ScannerResult` contains:
 | `inventory` | Languages, package managers, frameworks, file count, and entrypoints. |
 | `candidates` | Selected static-search leads with sanitized code/match text. |
 | `secretFindings` | Metadata only: path, line, type, and non-reversible fingerprint. |
-| `securityFindings` / `findings` | Committed-secret metadata findings plus conservative static security findings. |
+| `securityFindings` / `findings` | Independent committed-secret metadata findings only. |
 | `behaviors` | Capability evidence with `risk: 'unknown'`. |
 | `networkCalls` | Network evidence, including a literal destination when one can be extracted. |
 | `candidateFlows` | Structurally correlated, possible sensitive-source → network-sink relationships. |
@@ -179,11 +179,11 @@ The sandbox is destroyed in a `finally` block whether the scan succeeds, fails, 
 | Sandbox startup / lifecycle | 60-second startup wait; 250 ms status polling; 5 execution-start retries; 5-minute idle destruction timeout |
 | Deterministic command output | 128 MB combined stdout ceiling |
 | File inventory | All files are counted; at most 100,000 paths are emitted |
-| Manifests | At most 1,000 manifests; first 20 KB of each is emitted |
+| Manifests | At most 100 metadata manifests; first 20 KB of each is emitted |
 | Sensitive-file scan | At most 10,000 findings; files larger than 1 MB are not read |
 | Discovery search | Files up to 5 MB; 500 columns and 10 matches per file per category; at most 180 ranked leads per category |
-| Candidate selection | At most 200 total candidates and 60 configured per category (additional category caps: 60 major-security, 40 supply-chain, 32 other categories, 10 weak security context) |
-| Context extraction | Selected regular files up to 5 MB; match line plus ±25 lines; each emitted line is capped at 500 characters |
+| Candidate selection | At most 120 total candidates and 40 configured per category (with category caps of 24 or 32) |
+| Context extraction | Selected regular files up to 5 MB; match line plus ±3 lines; each emitted line is capped at 500 characters |
 
 Step 1 never executes repository code, dependencies, hooks, builds, or tests.
 
@@ -195,7 +195,7 @@ Step 1 never executes repository code, dependencies, hooks, builds, or tests.
 |---|---|
 | Runtime (**configurable**) | `CODEVET_AI_TIMEOUT_SEC`; default 300 seconds, maximum 300 seconds |
 | Process/report output (**configurable**) | `CODEVET_AI_MAX_OUTPUT_BYTES`; default and maximum 256 KB, including stdout and stderr; the structured report is subject to the same ceiling |
-| Prompt | Deterministic findings and metadata capped at 64 KB |
+| Prompt | Ranked discovery leads and metadata capped at 64 KB; secret findings are omitted |
 | Initial repository context | Up to 8 priority files totaling 256 KB; files must be no larger than 200 KB. Metadata files are prioritized, and fallback discovery considers up to 32 candidate paths. |
 | Tools and scope | `read`, `grep`, `find`, and `ls`, plus the terminating `codevet_report`; existing non-sensitive, non-image paths below `/workspace/repo` only; `.git`, secret/key/certificate paths, escaping symlinks, dependencies, and generated directories are blocked as applicable |
 | Model inspection | At most 30 LLM turns, 80 tool calls, and 4 MB aggregate model-visible repository content |

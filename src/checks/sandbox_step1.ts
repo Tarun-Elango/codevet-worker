@@ -180,7 +180,7 @@ export const scannerTemplate = Sandbox.template()
           })),
           securityIssues: Type.Array(Type.Object({
             category: Type.String(), file: Type.String(), line: Type.Optional(Type.Integer()),
-            description: Type.String(), severity: StringEnum(["low", "medium", "high", "critical"]),
+            description: Type.String(), severity: StringEnum(["high", "critical"]),
             confidence: Type.Number(), relatedFiles: Type.Optional(Type.Array(Type.String())),
           })),
           externalServices: Type.Array(Type.Object({
@@ -819,16 +819,10 @@ export async function runSandboxStep1(
         find . -type f ! -path './.git/*' \
           \\( \
             -name 'package.json' -o \
-            -name 'package-lock.json' -o \
-            -name 'yarn.lock' -o \
-            -name 'pnpm-lock.yaml' -o \
             -name 'requirements.txt' -o \
             -name 'pyproject.toml' -o \
             -name 'setup.py' -o \
             -name 'Pipfile' -o \
-            -name 'Pipfile.lock' -o \
-            -name 'poetry.lock' -o \
-            -name 'uv.lock' -o \
             -name 'go.mod' -o \
             -name 'Cargo.toml' -o \
             -name 'pom.xml' -o \
@@ -836,8 +830,7 @@ export async function runSandboxStep1(
             -name 'build.gradle.kts' -o \
             -name 'Gemfile' -o \
             -name 'composer.json' -o \
-            -name 'mix.exs' -o \
-            -name 'Dockerfile' \
+            -name 'mix.exs' \
           \\) -print0 |
         while IFS= read -r -d '' file; do
           if [ "$emitted_manifests" -ge ${MAX_MANIFESTS} ]; then
@@ -1025,15 +1018,19 @@ function score(candidate) {
   const isLowConfidence = lowConfidencePath.test(candidate.file)
   const isMajorCorrelation = category === 'security_signal' && externalInput.test(text) && majorSink.test(text)
   const isDownloadExecute = category === 'supply_chain' && capabilityApi.supply_chain.test(text)
-  let value = 0
+  const isWorkflowSecurity = category === 'supply_chain' && /pull_request_target|permissions\s*:\s*write-all/i.test(text)
+  // Global tiering mirrors Step 2's investigation order. Scores rank leads;
+  // they are never vulnerability severity or confidence.
+  let value = category === 'supply_chain' && !isWorkflowSecurity ? 500
+    : sensitiveSourceCategory.has(category) ? 300
+    : (category === 'process_execution' || category === 'external_http' || category === 'tracking_telemetry') ? 200
+    : 100
 
   // Prefer concrete operations and data reads over a generic identifier.
   if (isCapabilityApi) value += 5
   if (isSourceExpression) value += 4
-  // Same-line combinations are strong deterministic evidence. They still do
-  // not prove a flow; Pi must validate the surrounding code.
-  if (isMajorCorrelation) value += 30
-  if (isDownloadExecute) value += 25
+  if (isMajorCorrelation) value += 8
+  if (isDownloadExecute) value += 20
   if (entrypointPath.test(candidate.file)) value += 3
   if (sourceFile.test(candidate.file) && !isLowConfidence) value += 2
   if (!isCapabilityApi && !isSourceExpression) value -= 3
@@ -1046,6 +1043,7 @@ function score(candidate) {
   candidate.networkSink = networkSink.test(text)
   candidate.majorCorrelation = isMajorCorrelation
   candidate.downloadExecute = isDownloadExecute
+  candidate.workflowSecurity = isWorkflowSecurity
   candidate.majorSink = majorSink.test(text)
   candidate.externalInput = externalInput.test(text)
   candidate.requiresInputCorrelation = inputDependentSink.test(text)
@@ -1124,8 +1122,8 @@ RANK_CATEGORY
         run_rg security_signal -e 'eval\\(|exec(File)?\\(|spawn\\(|os\\.system|subprocess\\.(run|Popen|call)|Function\\(|pickle\\.loads?|yaml\\.load|unserialize|ObjectInputStream|BinaryFormatter|jwt\\.(verify|decode)|verify_signature|algorithms?.*(none|false)|isAdmin|privileged|auth.*bypass|pull_request_target|permissions[[:space:]]*:[[:space:]]*write-all|req(uest)?\\.(body|params|query)|ctx\\.(body|params|query)|\\.(query|execute|raw)\\(|readFile(Sync)?\\(|sendFile\\(|createReadStream\\('
         run_rg supply_chain -e 'preinstall|postinstall|prepare|pull_request_target|permissions[[:space:]]*:[[:space:]]*write-all|LaunchAgents|crontab|systemctl[[:space:]]+enable|schtasks|curl|wget|Invoke-WebRequest|/dev/tcp|bash[[:space:]]+-i|b64decode|FromBase64String|stratum\\+tcp|xmrig|coinhive'
 
-        # Rank across categories, then Pass 2: fetch +/- 25 lines only for
-        # selected leads. Node is used only to read files; it never executes
+        # Rank across categories, then Pass 2: fetch only a few nearby lines
+        # for selected leads. Node is used only to read files; it never executes
         # repository code. The compact protocol is base64-framed so filenames
         # and source text cannot corrupt scanner output.
         echo "CODEVET_DISCOVERY_BEGIN"
@@ -1136,12 +1134,6 @@ const input = process.argv[2]
 const limit = Number(process.argv[3])
 const categoryLimit = Number(process.argv[4])
 const root = fs.realpathSync('.')
-// This runs in a separate Node process from the ranker, so it must define
-// its own category set for the cross-category proximity boost.
-const sensitiveSourceCategory = new Set([
-  'keyboard_input', 'microphone_access', 'clipboard_access',
-  'credential_handling', 'sensitive_system_access',
-])
 const candidates = []
 const seen = new Set()
 for (const line of fs.readFileSync(input, 'utf8').split('\\n')) {
@@ -1151,60 +1143,16 @@ for (const line of fs.readFileSync(input, 'utf8').split('\\n')) {
     if (!seen.has(key)) { seen.add(key); candidates.push(candidate) }
   } catch { /* Ignore incomplete temporary records. */ }
 }
-// A concrete sensitive source near a concrete network sink is more useful
-// than either isolated match. This is still only a ranking hint, not proof of
-// a data flow; correlateFindings performs the conservative reported flow.
-for (const source of candidates) {
-  if (!sensitiveSourceCategory.has(source.category) || !source.sourceExpression) continue
-  if (candidates.some((sink) =>
-    sink.category === 'external_http' && sink.networkSink &&
-    sink.file === source.file && Math.abs(sink.line - source.line) <= 100
-  )) {
-    source.score += 5
-  }
-}
-// Nearby external input and a major sink are useful triage evidence, not a
-// claim that the value reaches the sink. This captures common multi-line
-// handler patterns while retaining a very small budget for unpaired input.
-for (const source of candidates) {
-  if (source.category !== 'security_signal' || !source.externalInput) continue
-  if (candidates.some((sink) => sink.category === 'security_signal' && sink.majorSink && sink.file === source.file && Math.abs(sink.line - source.line) <= 100)) {
-    source.score += 25
-    source.correlatedSecurity = true
-  }
-}
-for (const sink of candidates) {
-  if (sink.category !== 'security_signal' || !sink.majorSink) continue
-  if (candidates.some((source) => source.category === 'security_signal' && source.externalInput && source.file === sink.file && Math.abs(source.line - sink.line) <= 100)) {
-    sink.score += 25
-    sink.correlatedSecurity = true
-  }
-}
-for (const sink of candidates) {
-  if (sink.category !== 'external_http' || !sink.networkSink) continue
-  if (candidates.some((source) =>
-    sensitiveSourceCategory.has(source.category) && source.sourceExpression &&
-    source.file === sink.file && Math.abs(source.line - sink.line) <= 100
-  )) {
-    sink.score += 5
-  }
-}
+// Do not manufacture data flow from line proximity. Step 2 reads callers and
+// follows values; Step 1 only orders concrete match locations.
 candidates.sort((a, b) => b.score - a.score || a.file.localeCompare(b.file) || a.line - b.line)
 const selected = []
 const selectedByCategory = new Map()
 for (const candidate of candidates) {
   const count = selectedByCategory.get(candidate.category) || 0
-  // Generic contextual input is valuable only next to a relevant sink. Do
-  // not let it displace behavior evidence or strong major-security leads.
-  const weakSecurity = candidate.category === 'security_signal' && !candidate.majorSink && !candidate.majorCorrelation && !candidate.capabilityApi
-  // Unpaired request-input matches are generic context, not evidence.
-  if (weakSecurity && candidate.externalInput && !candidate.correlatedSecurity) continue
-  // SQL/file sinks and interpreters are major leads only when paired with
-  // external input. Static commands remain process-behavior evidence.
-  if (candidate.category === 'security_signal' && candidate.requiresInputCorrelation && !candidate.majorCorrelation && !candidate.correlatedSecurity) continue
-  const perCategoryLimit = candidate.category === 'security_signal'
-    ? (weakSecurity ? 10 : 60)
-    : candidate.category === 'supply_chain' ? 40 : 32
+  // Context-dependent sinks remain leads even when Step 1 cannot see their
+  // input on the same line. Pi must validate the actual source-to-sink path.
+  const perCategoryLimit = candidate.category === 'supply_chain' ? 32 : 24
   if (count >= Math.min(categoryLimit, perCategoryLimit)) continue
   selected.push(candidate)
   selectedByCategory.set(candidate.category, count + 1)

