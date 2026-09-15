@@ -8,6 +8,7 @@ import {
   redactSensitiveText,
 } from '../dist/checks/analysis.js'
 import { scannerTemplate } from '../dist/checks/sandbox_step1.js'
+import { parseFinding } from '../dist/checkv2/orchestrator.js'
 
 const b64 = (value) => Buffer.from(value).toString('base64')
 const candidate = (category, file, line, text) =>
@@ -80,6 +81,21 @@ test('accepts evidence excerpts with trusted paths and line ranges', () => {
   assert.throws(
     () => parseAgentOutput(JSON.stringify({ ...report, suspiciousBehaviors: [{ ...report.suspiciousBehaviors[0], file: '../escape.ts' }] }), coverageForAgent(3), new Map([['src/input.ts', 10]])),
     /source location/
+  )
+})
+
+test('normalizes conventional model severity and confidence labels in CheckV2', () => {
+  const finding = parseFinding({
+    kind: 'securityIssue', title: 'Example', severity: ' Informational ', confidence: 'Strong',
+    description: 'A source-cited example.',
+    evidence: [{ file: 'src/example.ts', startLine: 1, endLine: 1, note: 'Evidence.' }],
+  })
+  assert.equal(finding.kind, 'security_issue')
+  assert.equal(finding.severity, 'low')
+  assert.equal(finding.confidence, 'high')
+  assert.throws(
+    () => parseFinding({ ...finding, severity: 'urgent' }),
+    /Invalid severity/
   )
 })
 

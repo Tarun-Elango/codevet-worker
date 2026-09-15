@@ -18,7 +18,9 @@ import type {
   CheckV2Result,
 } from './types.js'
 
-export const SCANNER_VERSION = 'v2-ripgrep-semgrep-investigate-verify'
+// Bump whenever V2's analysis protocol changes so cached results are not
+// reused across materially different investigator/verifier behavior.
+export const SCANNER_VERSION = 'v2-ripgrep-semgrep-investigate-verify-2'
 
 const PROVIDER_KEY_ENV: Record<string, string> = {
   openrouter: 'OPENROUTER_API_KEY',
@@ -143,7 +145,21 @@ function parseFlow(value: unknown): Finding['flow'] | undefined {
   return result
 }
 
-function parseFinding(value: unknown): Finding {
+function normalizedEnum(
+  value: unknown,
+  field: string,
+  allowed: readonly string[],
+  aliases: Readonly<Record<string, string>> = {},
+): string {
+  if (typeof value !== 'string') throw new Error(`Invalid ${field}`)
+  const normalized = value.trim().toLowerCase().replace(/[\s_-]+/g, '_')
+  const canonical = aliases[normalized] ?? normalized
+  if (!allowed.includes(canonical)) throw new Error(`Invalid ${field}`)
+  return canonical
+}
+
+/** Parse one model finding into the canonical persisted schema. */
+export function parseFinding(value: unknown): Finding {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Invalid finding')
   const item = value as Record<string, unknown>
   // Accept the two equivalent camel-case spellings used by the older scanner
@@ -152,14 +168,21 @@ function parseFinding(value: unknown): Finding {
     : item.kind === 'securityIssue' ? 'security_issue'
     : item.kind
   if (kind !== 'suspicious_behavior' && kind !== 'security_issue') throw new Error('Invalid finding kind')
-  if (!['low', 'medium', 'high', 'critical'].includes(String(item.severity))) throw new Error('Invalid severity')
-  if (!['low', 'medium', 'high'].includes(String(item.confidence))) throw new Error('Invalid confidence')
+  // Models commonly use presentation case ("High") and occasionally the
+  // equivalent labels below. Canonicalize those values at the protocol edge
+  // rather than failing an otherwise fully source-verified scan.
+  const severity = normalizedEnum(item.severity, 'severity', ['low', 'medium', 'high', 'critical'], {
+    info: 'low', informational: 'low', moderate: 'medium', severe: 'high',
+  }) as Finding['severity']
+  const confidence = normalizedEnum(item.confidence, 'confidence', ['low', 'medium', 'high'], {
+    certain: 'high', strong: 'high', moderate: 'medium',
+  }) as Finding['confidence']
   if (!Array.isArray(item.evidence) || item.evidence.length === 0 || item.evidence.length > 10) throw new Error('A finding needs evidence')
   return {
     kind,
     title: text(item.title, 'finding title', 500),
-    severity: item.severity as Finding['severity'],
-    confidence: item.confidence as Finding['confidence'],
+    severity,
+    confidence,
     description: text(item.description, 'finding description'),
     evidence: item.evidence.map(parseEvidence),
     ...(item.flow == null ? {} : { flow: parseFlow(item.flow) }),
