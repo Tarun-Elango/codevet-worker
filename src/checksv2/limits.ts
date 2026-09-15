@@ -10,37 +10,19 @@ function boundedPositiveIntegerEnv(name: string, fallback: number, maximum: numb
 }
 
 /**
- * Step 1 — deterministic checkout, inventory, secret-presence, and discovery
- * scan limits. These protect the isolated scanner and its host protocol.
+ * Step 1 — deterministic checkout, secret-presence, and discovery scan.
+ * The wall-clock deadline is the only scan-work budget; protocol output remains
+ * bounded so a repository cannot exhaust the worker while being reported.
  */
 export const SANDBOX_START_TIMEOUT_MS = 60_000
 export const SANDBOX_STATUS_POLL_MS = 250
 export const SANDBOX_EXEC_START_RETRIES = 5
-export const SANDBOX_IDLE_TIMEOUT_MINUTES = 30
-export const SCANNER_TIMEOUT_SEC = boundedPositiveIntegerEnv('CODEVET_SCANNER_TIMEOUT_SEC', 600, 900)
+// Cleanup for abandoned workers; it deliberately exceeds the active scan deadline.
+export const SANDBOX_IDLE_TIMEOUT_MINUTES = 25
+export const SCANNER_TIMEOUT_SEC = boundedPositiveIntegerEnv('CODEVET_SCANNER_TIMEOUT_SEC', 900, 1_200)
+// This is protocol backpressure, not a scan-result quota.
 export const MAX_SANDBOX_OUTPUT_BYTES = 128 * 1024 * 1024
-export const MAX_INVENTORY_FILES = 100_000
-// Step 1 reads only compact metadata manifests used to identify project type,
-// frameworks, package managers, and declared entrypoints. Lockfiles are still
-// present in the path inventory but their dependency graphs are not transported.
-export const MAX_MANIFESTS = 100
-export const MAX_MANIFEST_CONTENT_BYTES = 20_000
-export const MAX_SECRET_FINDINGS = 10_000
-export const MAX_SECRET_FILE_BYTES = 1 * 1024 * 1024
-export const MAX_DISCOVERY_CANDIDATES_PER_CATEGORY = 180
-export const MAX_CONTEXT_CANDIDATES = 120
-export const MAX_SELECTED_CANDIDATES_PER_CATEGORY = 40
-export const MAX_DISCOVERY_FILE_BYTES = 5 * 1024 * 1024
-export const MAX_DISCOVERY_COLUMNS = 500
-export const MAX_DISCOVERY_MATCHES_PER_FILE = 10
-// Match text is only a navigation lead. Step 2 reads the prioritized source
-// files and performs scoped follow-up, so Step 1 needs very little local text.
 export const CONTEXT_LINES_EACH_SIDE = 3
-export const MAX_CONTEXT_LINE_CHARACTERS = 500
-export const MAX_FINDINGS = 10_000
-export const MAX_CANDIDATES = 10_000
-export const MAX_SNIPPETS = 1_000
-export const MAX_FLOWS = 1_000
 
 /**
  * Step 2 — bounded Pi enrichment limits. These control model-visible input,
@@ -85,7 +67,7 @@ Your primary goals are:
 Do NOT perform a generic exhaustive AppSec review.
 
 The deterministic Step 1 results are prioritized, non-exhaustive navigation hints—not confirmed findings. Follow this workflow:
-1. Determine the repository's purpose from metadata, manifests, entrypoints, and source.
+1. Determine the repository's purpose from entrypoints and source.
 2. Investigate Step 1 suspicious-behavior leads first. Trace relevant callers, imports, data sources, sinks, and external destinations, and determine whether each behavior is expected for the application.
 3. Investigate Step 1 major-security leads next.
 4. Independently inspect entrypoints and core components for important issues Step 1 missed, using read, grep, find, and ls when useful.

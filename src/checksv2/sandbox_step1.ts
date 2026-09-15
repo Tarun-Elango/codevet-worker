@@ -18,19 +18,7 @@ import {
   MAX_AGENT_READ_BYTES,
   MAX_AGENT_SINGLE_FILE_READ_BYTES,
   MAX_AGENT_TOOL_CALLS,
-  MAX_CONTEXT_CANDIDATES,
-  MAX_CONTEXT_LINE_CHARACTERS,
-  MAX_DISCOVERY_CANDIDATES_PER_CATEGORY,
-  MAX_DISCOVERY_COLUMNS,
-  MAX_DISCOVERY_FILE_BYTES,
-  MAX_DISCOVERY_MATCHES_PER_FILE,
-  MAX_INVENTORY_FILES,
-  MAX_MANIFEST_CONTENT_BYTES,
-  MAX_MANIFESTS,
   MAX_SANDBOX_OUTPUT_BYTES,
-  MAX_SECRET_FILE_BYTES,
-  MAX_SECRET_FINDINGS,
-  MAX_SELECTED_CANDIDATES_PER_CATEGORY,
   MIN_FILES_TO_INSPECT,
   SANDBOX_EXEC_START_RETRIES,
   SANDBOX_IDLE_TIMEOUT_MINUTES,
@@ -120,6 +108,7 @@ export const scannerTemplate = Sandbox.template()
     const MAX_READ_BYTES = ${MAX_AGENT_READ_BYTES}
     const MAX_PRELOADED_FILES = ${MAX_AGENT_PRELOADED_FILES}
     const MAX_PRELOADED_BYTES = ${MAX_AGENT_PRELOADED_BYTES}
+    const MAX_FALLBACK_FILES = 1_000
     const MAX_SINGLE_FILE_READ_BYTES = ${MAX_AGENT_SINGLE_FILE_READ_BYTES}
     const MAX_LIST_RESULTS = ${MAX_AGENT_LIST_RESULTS}
     const MAX_GREP_RESULTS = ${MAX_AGENT_GREP_RESULTS}
@@ -423,7 +412,7 @@ export const scannerTemplate = Sandbox.template()
       }
 
       async function fallbackFiles(directory, output) {
-        if (output.length >= ${MAX_INVENTORY_FILES}) return
+        if (output.length >= MAX_FALLBACK_FILES) return
         let entries
         try {
           entries = await readdir(directory, { withFileTypes: true })
@@ -432,7 +421,7 @@ export const scannerTemplate = Sandbox.template()
         }
         entries.sort((a, b) => a.name.localeCompare(b.name))
         for (const entry of entries) {
-          if (output.length >= ${MAX_INVENTORY_FILES}) return
+          if (output.length >= MAX_FALLBACK_FILES) return
           if (entry.name === ".git" || GENERATED_DIRECTORY.has(entry.name)) continue
           const path = resolve(directory, entry.name)
           if (entry.isDirectory()) {
@@ -448,8 +437,8 @@ export const scannerTemplate = Sandbox.template()
 
       // Do not depend on the model voluntarily choosing a read tool. Before
       // its first turn, inject bounded, redacted contents of evidence-related
-      // files. Fill spare slots with manifests and source files so even scans
-      // with no deterministic matches receive real repository code.
+      // files. Fill spare slots with source files so even scans with no
+      // deterministic matches receive real repository code.
       pi.on("before_agent_start", async () => {
         if (sourceContextInjected) return
         sourceContextInjected = true
@@ -472,14 +461,10 @@ export const scannerTemplate = Sandbox.template()
         fallback.sort((a, b) => fallbackRank(a) - fallbackRank(b) || a.split(sep).length - b.split(sep).length || a.localeCompare(b))
 
         // Honor caller-provided priorities first (the verifier's cited
-        // evidence precedes generic leads), then add metadata and general
-        // source-code coverage.
-        const metadata = fallback.filter((path) =>
-          /(?:^|\\/)(?:README(?:\\.[^/]*)?|package\\.json|pyproject\\.toml|requirements\\.txt|go\\.mod|Cargo\\.toml|pom\\.xml|Dockerfile[^/]*)$/i.test(path)
-        ).slice(0, 3)
+        // evidence precedes generic leads), then add general source-code coverage.
         const files = []
         const considered = new Set()
-        for (const path of [...requested, ...metadata, ...fallback]) {
+        for (const path of [...requested, ...fallback]) {
           if (files.length >= MAX_PRELOADED_FILES) break
           const target = await repositoryTarget(path)
           if (!target || considered.has(target)) continue
@@ -852,65 +837,14 @@ export async function runSandboxStep1(
         echo "Repository cloned"
         echo "CODEVET_COMMIT:$actual_commit"
 
-        # STEP F — Inventory files and manifests. The file list is bounded for
-        # transport, but fileCount is computed across the whole checkout.
-        echo "CODEVET_INVENTORY_BEGIN"
-        file_count=$(find . -type f ! -path './.git/*' -printf 'x' | wc -c)
-        printf 'CODEVET_INVENTORY_COUNT:%s\\n' "$file_count"
-
-        emitted_files=0
-        find . -type f ! -path './.git/*' -print0 |
-        while IFS= read -r -d '' file; do
-          if [ "$emitted_files" -ge ${MAX_INVENTORY_FILES} ]; then
-            break
-          fi
-
-          path=$(printf '%s' "$file" | sed 's#^\\./##')
-          encoded_path=$(printf '%s' "$path" | base64 | tr -d '\\n')
-          printf 'CODEVET_FILE:%s\\n' "$encoded_path"
-          emitted_files=$((emitted_files + 1))
-        done
-
-        emitted_manifests=0
-        find . -type f ! -path './.git/*' \
-          \\( \
-            -name 'package.json' -o \
-            -name 'requirements.txt' -o \
-            -name 'pyproject.toml' -o \
-            -name 'setup.py' -o \
-            -name 'Pipfile' -o \
-            -name 'go.mod' -o \
-            -name 'Cargo.toml' -o \
-            -name 'pom.xml' -o \
-            -name 'build.gradle' -o \
-            -name 'build.gradle.kts' -o \
-            -name 'Gemfile' -o \
-            -name 'composer.json' -o \
-            -name 'mix.exs' \
-          \\) -print0 |
-        while IFS= read -r -d '' file; do
-          if [ "$emitted_manifests" -ge ${MAX_MANIFESTS} ]; then
-            break
-          fi
-
-          path=$(printf '%s' "$file" | sed 's#^\\./##')
-          encoded_path=$(printf '%s' "$path" | base64 | tr -d '\\n')
-          content=$(head -c ${MAX_MANIFEST_CONTENT_BYTES} -- "$file" | base64 | tr -d '\\n')
-          printf 'CODEVET_MANIFEST:%s:%s\\n' "$encoded_path" "$content"
-          emitted_manifests=$((emitted_manifests + 1))
-        done
-        echo "CODEVET_INVENTORY_END"
-
         # STEP G — Inspect conventionally sensitive files locally. Their
         # contents must not cross the sandbox boundary, so this emits only a
         # path, line, secret classification, and a non-reversible HMAC fingerprint.
-        node - ${MAX_SECRET_FINDINGS} <<'SECRET_PRESENCE_SCANNER'
+        node - <<'SECRET_PRESENCE_SCANNER'
         const fs = require('node:fs')
         const path = require('node:path')
         const crypto = require('node:crypto')
 
-        const maxFindings = Number(process.argv[2])
-        const maxFileBytes = ${MAX_SECRET_FILE_BYTES}
         // This ephemeral key is never emitted. HMAC avoids making a weak
         // password recoverable through an offline SHA-256 dictionary attack.
         const fingerprintKey = crypto.randomBytes(32)
@@ -925,7 +859,6 @@ export async function runSandboxStep1(
         }
 
         function emit(file, line, secretType, value) {
-          if (findings >= maxFindings) return
           // Base64 prevents a repository-controlled filename/type from
           // corrupting this line-oriented protocol. Never print value.
           const encodedFile = Buffer.from(file).toString('base64')
@@ -1006,7 +939,6 @@ export async function runSandboxStep1(
           let entries
           try { entries = fs.readdirSync(directory, { withFileTypes: true }) } catch { return }
           for (const entry of entries) {
-            if (findings >= maxFindings) return
             if (entry.name === '.git') continue
             const full = path.join(directory, entry.name)
             if (entry.isDirectory()) {
@@ -1016,8 +948,7 @@ export async function runSandboxStep1(
               if (!sensitivePath(file)) continue
               let bytes
               try {
-                const stat = fs.statSync(full)
-                if (stat.size > maxFileBytes) continue
+                fs.statSync(full)
                 bytes = fs.readFileSync(full)
               } catch { continue }
               if (/(?:^|\\/)\\.env(?:\\.|$)/i.test(file)) inspectEnvironment(file, bytes)
@@ -1038,7 +969,6 @@ SECRET_PRESENCE_SCANNER
         cat > "$rank_category" <<'RANK_CATEGORY'
 const readline = require('node:readline')
 const category = process.argv[2]
-const limit = Number(process.argv[3])
 const lowConfidencePath = /(^|\\/)(?:test|tests|__tests__|fixtures?|mocks?|docs?|examples?)\\/|(?:^|\\/)(?:README|CHANGELOG|LICENSE)(?:\\.|$)|(?:_test\\.go|\\.(?:test|spec)\\.[jt]sx?|\\.md|\\.lock|min\\.js|\\.map)$/i
 const sourceFile = /\\.(?:[cm]?[jt]sx?|py|go|rs|java|kt|kts|scala|sc|rb|php|ex|exs|erl|hrl|r|rmd|sol|move|c|h|cc|cpp|cxx|cs|swift|dart|lua|sh|bash|zsh|fish|ksh|dash|ps1|bat|cmd|vue|svelte|ipynb)$/i
 const entrypointPath = /(?:^|\\/)(?:main|index|app|server|cli)\\.(?:[cm]?[jt]sx?|py|go|rs|rb|php)$|(?:^|\\/)cmd\\/[^/]+\\.(?:go|rs)$/i
@@ -1110,7 +1040,6 @@ function retain(candidate) {
   candidate.score = score(candidate)
   best.push(candidate)
   best.sort((a, b) => b.score - a.score || a.file.localeCompare(b.file) || a.line - b.line)
-  if (best.length > limit) best.pop()
 }
 const input = readline.createInterface({ input: process.stdin })
 input.on('line', (line) => {
@@ -1140,9 +1069,6 @@ RANK_CATEGORY
             --hidden \
             --no-ignore \
             --ignore-case \
-            --max-filesize ${MAX_DISCOVERY_FILE_BYTES} \
-            --max-columns ${MAX_DISCOVERY_COLUMNS} \
-            --max-count ${MAX_DISCOVERY_MATCHES_PER_FILE} \
             --glob '!**/.git/**' \
             --glob '!**/node_modules/**' \
             --glob '!**/vendor/**' \
@@ -1155,7 +1081,7 @@ RANK_CATEGORY
             --glob '!**/{secret,secrets,credential,credentials}.{yml,yaml,json,ini,conf}' \
             --glob '!**/*.{pem,key,p12,pfx}' \
             "$@" \
-            . | node "$rank_category" "$category" ${MAX_DISCOVERY_CANDIDATES_PER_CATEGORY} >> "$discovery_file"
+            . | node "$rank_category" "$category" >> "$discovery_file"
           rg_status=\${PIPESTATUS[0]}
           set -e
           # A no-match exit is normal. There is no head pipe in this pass, so
@@ -1183,12 +1109,10 @@ RANK_CATEGORY
         # repository code. The compact protocol is base64-framed so filenames
         # and source text cannot corrupt scanner output.
         echo "CODEVET_DISCOVERY_BEGIN"
-        node - "$discovery_file" ${MAX_CONTEXT_CANDIDATES} ${MAX_SELECTED_CANDIDATES_PER_CATEGORY} <<'SELECT_AND_CONTEXT'
+        node - "$discovery_file" <<'SELECT_AND_CONTEXT'
 const fs = require('node:fs')
 const path = require('node:path')
 const input = process.argv[2]
-const limit = Number(process.argv[3])
-const categoryLimit = Number(process.argv[4])
 const root = fs.realpathSync('.')
 const candidates = []
 const seen = new Set()
@@ -1204,23 +1128,18 @@ for (const line of fs.readFileSync(input, 'utf8').split('\\n')) {
 candidates.sort((a, b) => b.score - a.score || a.file.localeCompare(b.file) || a.line - b.line)
 const selected = []
 const selectedKeys = new Set()
-const selectedByCategory = new Map()
-const categoryCap = (category) => Math.min(categoryLimit, category === 'supply_chain' ? 32 : 24)
 const take = (candidate) => {
-  const count = selectedByCategory.get(candidate.category) || 0
-  if (selected.length >= limit || count >= categoryCap(candidate.category)) return false
   const key = candidate.category + ':' + candidate.file + ':' + candidate.line
   if (selectedKeys.has(key)) return false
   selected.push(candidate)
   selectedKeys.add(key)
-  selectedByCategory.set(candidate.category, count + 1)
   return true
 }
 // Reserve a small fair share for every category before global score filling.
 // Otherwise one noisy high-tier category can consume the total cap and starve
 // a high-value lead in a later category.
 const categories = [...new Set(candidates.map((candidate) => candidate.category))]
-for (let round = 0; round < 4 && selected.length < limit; round += 1) {
+for (let round = 0; round < 4; round += 1) {
   for (const category of categories) {
     const candidate = candidates.filter((item) => item.category === category)[round]
     if (candidate) take(candidate)
@@ -1239,7 +1158,7 @@ for (const candidate of selected) {
     target = fs.realpathSync(candidate.file)
     if (target !== root && !target.startsWith(root + path.sep)) continue
     const stat = fs.statSync(target)
-    if (!stat.isFile() || stat.size > ${MAX_DISCOVERY_FILE_BYTES}) continue
+    if (!stat.isFile()) continue
   } catch { continue }
   const file = path.relative(root, target).split(path.sep).join('/')
   let lines = requested.get(file)
@@ -1259,7 +1178,7 @@ for (const [file, wanted] of requested) {
     const content = rawContent.split(/\\r?\\n/)
     for (const lineNumber of [...wanted].sort((a, b) => a - b)) {
       const text = content[lineNumber - 1]
-      if (text !== undefined) process.stdout.write('CODEVET_CONTEXT:' + encode(file) + ':' + lineNumber + ':' + encode(text.slice(0, ${MAX_CONTEXT_LINE_CHARACTERS})) + '\\n')
+      if (text !== undefined) process.stdout.write('CODEVET_CONTEXT:' + encode(file) + ':' + lineNumber + ':' + encode(text) + '\\n')
     }
     // Emit only structural import edges between selected evidence files. This
     // improves cross-file correlation without claiming a proven value flow.

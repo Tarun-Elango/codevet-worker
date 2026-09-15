@@ -8,13 +8,6 @@ import {
   MAX_AGENT_READ_BYTES,
   MAX_AGENT_STRING_LENGTH,
   MAX_AGENT_TOOL_CALLS,
-  MAX_CANDIDATES,
-  MAX_FINDINGS,
-  MAX_FLOWS,
-  MAX_INVENTORY_FILES,
-  MAX_MANIFESTS,
-  MAX_SECRET_FINDINGS,
-  MAX_SNIPPETS,
 } from './limits.js'
 
 export type Severity = 'low' | 'medium' | 'high'
@@ -41,14 +34,6 @@ export type BehaviorCategory =
   | 'tracking_telemetry'
   | 'sensitive_system_access'
   | 'credential_input'
-
-export type RepositoryInventory = {
-  languages: string[]
-  packageManagers: string[]
-  frameworks: string[]
-  fileCount: number
-  entrypoints: string[]
-}
 
 export type ScanCandidate = {
   category: CandidateCategory
@@ -215,7 +200,6 @@ export type AgentAnalysis = {
 
 export type ScannerResult = {
   commitSha: string | null
-  inventory: RepositoryInventory
   candidates: ScanCandidate[]
   /** Metadata-only detections from conventionally sensitive files. Values never leave the sandbox. */
   secretFindings: SecretPresenceFinding[]
@@ -242,11 +226,6 @@ type RawDiscoveryEvent = {
   column: number
   text: string
   match: string
-}
-
-type Manifest = {
-  path: string
-  content: string
 }
 
 // Keep the agent runtime version in the scanner cache key. Changing the
@@ -409,31 +388,20 @@ export function configuredAgent(): { provider: string; model: string; apiKey: st
   return { provider, model, apiKey, piKeyEnv }
 }
 
-export function coverageForAgent(repositoryFiles: number, inspectedFiles: string[] = []): AgentAnalysis['coverage'] {
-  const uninspectedFiles = Math.max(0, repositoryFiles - inspectedFiles.length)
+export function coverageForAgent(inspectedFiles: string[] = []): AgentAnalysis['coverage'] {
   const limitations = [
     `Each AI pass is limited to ${MAX_AGENT_READ_BYTES / 1024} KB of model-visible repository content and ${MAX_AGENT_TOOL_CALLS} inspection tool calls. Finalization is requested after ${MAX_AGENT_LLM_TURNS} model turns per pass.`,
     'Coverage is recorded by the trusted scanner across both AI passes; the model does not self-report inspected files.',
   ]
-  if (repositoryFiles > MAX_INVENTORY_FILES) {
-    limitations.push(
-      `Repository path inventory was truncated to ${MAX_INVENTORY_FILES} of ${repositoryFiles} files.`
-    )
-  }
-  if (uninspectedFiles > 0) {
-    const percent = repositoryFiles > 0
-      ? ((inspectedFiles.length / repositoryFiles) * 100).toFixed(2)
-      : '0.00'
-    limitations.push(
-      `AI inspected ${percent}% of repository files; ${uninspectedFiles} files were not inspected by the AI.`
-    )
-  }
+  limitations.push(
+    'Repository-wide file coverage is unavailable because CodeVet does not inventory repository paths.'
+  )
   limitations.push(
     'Deterministic discovery ignores generated/dependency directories and files over 1 MB, and retains only the highest-ranked matches when evidence caps are reached.'
   )
 
   return {
-    repositoryFiles,
+    repositoryFiles: 0,
     filesInspected: inspectedFiles.length,
     inspectedFiles,
     limitations,
@@ -442,7 +410,6 @@ export function coverageForAgent(repositoryFiles: number, inspectedFiles: string
 
 export function emptyAgentAnalysis(
   status: 'failed' | 'timeout',
-  repositoryFiles: number,
   error?: string,
   inspectedFiles: string[] = []
 ): AgentAnalysis {
@@ -451,7 +418,7 @@ export function emptyAgentAnalysis(
     verdict: 'inconclusive',
     summary: null,
     overallRisk: 'unknown',
-    coverage: coverageForAgent(repositoryFiles, inspectedFiles),
+    coverage: coverageForAgent(inspectedFiles),
     suspiciousBehaviors: [],
     securityIssues: [],
     externalServices: [],
@@ -461,7 +428,6 @@ export function emptyAgentAnalysis(
 }
 
 type AgentPromptEvidence = {
-  inventory: RepositoryInventory
   /** Every group is unvalidated. Object order documents investigation order. */
   leadGroups: {
     downloadExecutePersistenceObfuscation: ScanCandidate[]
@@ -565,8 +531,6 @@ export function buildAgentFilePriorities(result: ScannerResult): string[] {
   // 5. Context-dependent major-security sinks. Deterministic secret findings
   // are deliberately excluded from AI input and preloading.
   for (const candidate of rankedCandidates(result.candidates).filter((item) => candidateLeadRank(item) === 5)) add(candidate.file)
-  for (const entrypoint of result.inventory.entrypoints) add(entrypoint)
-
   // The sandbox validates paths and fills spare slots with metadata/source
   // files. Step 2 can discover further files with bounded read/grep tools.
   return paths.slice(0, MAX_AGENT_PRELOADED_FILES * 3)
@@ -583,13 +547,6 @@ export function buildAgentPrompt(result: ScannerResult): string {
   if (evidenceBudget <= 0) throw new Error('agent prompt budget is too small')
 
   const leads: AgentPromptEvidence = {
-    inventory: {
-      languages: [],
-      packageManagers: [],
-      frameworks: [],
-      fileCount: result.inventory.fileCount,
-      entrypoints: [],
-    },
     leadGroups: {
       downloadExecutePersistenceObfuscation: [],
       possibleSensitiveEgress: [],
@@ -609,14 +566,9 @@ export function buildAgentPrompt(result: ScannerResult): string {
   }
   const bounded = <T>(value: T): T => boundPromptValue(value) as T
 
-  // Compact metadata comes first. Evidence follows the investigation order:
-  // suspicious behavior, possible sensitive egress, unexpected activity, and
-  // finally major-security sinks. Step 2 gets source context from preloaded
-  // files and bounded read/grep rather than bulky Step 1 snippets.
-  addItems(leads.inventory.languages, result.inventory.languages.map(bounded))
-  addItems(leads.inventory.packageManagers, result.inventory.packageManagers.map(bounded))
-  addItems(leads.inventory.frameworks, result.inventory.frameworks.map(bounded))
-  addItems(leads.inventory.entrypoints, result.inventory.entrypoints.map(bounded))
+  // Evidence follows the investigation order: suspicious behavior, possible
+  // sensitive egress, unexpected activity, and finally major-security sinks.
+  // Step 2 gets source context from preloaded files and bounded read/grep.
   const candidates = rankedCandidates(result.candidates)
   addItems(leads.leadGroups.downloadExecutePersistenceObfuscation,
     candidates.filter((item) => candidateLeadRank(item) === 1).slice(0, 12).map(bounded))
@@ -663,7 +615,7 @@ function boundedConfidence(value: unknown): number | undefined {
 /** Strictly validate and bound all model-originated fields before persistence. */
 export function parseAgentOutput(
   stdout: string,
-  coverage: AgentAnalysis['coverage'] = coverageForAgent(0),
+  coverage: AgentAnalysis['coverage'] = coverageForAgent(),
   trustedFiles?: ReadonlyMap<string, number> | ReadonlySet<string>
 ): AgentAnalysis {
   if (Buffer.byteLength(stdout) > MAX_AGENT_OUTPUT_BYTES) throw new Error('agent output too large')
@@ -891,7 +843,6 @@ function addCandidate(
   category: CandidateCategory
 ) {
   if (
-    candidates.length >= MAX_CANDIDATES ||
     !raw.file ||
     !Number.isInteger(raw.line) ||
     raw.line < 1 ||
@@ -930,10 +881,6 @@ function addFinding(
   candidate: ScanCandidate,
   rule: Omit<ScannerFinding, 'file' | 'line' | 'column' | 'snippet' | 'match'>
 ) {
-  if (findings.length >= MAX_FINDINGS) {
-    return
-  }
-
   if (
     findings.some(
       (finding) =>
@@ -1266,9 +1213,6 @@ function correlateFindings(
         },
       })
 
-      if (flows.length >= MAX_FLOWS) {
-        return flows
-      }
     }
   }
 
@@ -1283,10 +1227,6 @@ function addContextSnippet(
   },
   linesByFile: Map<string, Map<number, string>>
 ) {
-  if (snippets.length >= MAX_SNIPPETS) {
-    return
-  }
-
   if (
     snippets.some(
       (snippet) =>
@@ -1345,245 +1285,6 @@ function collectSnippets(
   return snippets
 }
 
-function languageForPath(file: string): string | null {
-  const extension = file.match(/\.([^.\/]+)$/)?.[1]?.toLowerCase()
-  if (!extension) {
-    return null
-  }
-
-  const languages: Record<string, string> = {
-    ts: 'typescript',
-    tsx: 'typescript',
-    js: 'javascript',
-    jsx: 'javascript',
-    mjs: 'javascript',
-    cjs: 'javascript',
-    py: 'python',
-    go: 'go',
-    rs: 'rust',
-    java: 'java',
-    kt: 'kotlin',
-    kts: 'kotlin',
-    rb: 'ruby',
-    php: 'php',
-    c: 'c',
-    h: 'c',
-    cc: 'cpp',
-    cpp: 'cpp',
-    cxx: 'cpp',
-    cs: 'csharp',
-    swift: 'swift',
-    dart: 'dart',
-    lua: 'lua',
-    scala: 'scala',
-    sc: 'scala',
-    ex: 'elixir',
-    exs: 'elixir',
-    erl: 'erlang',
-    hrl: 'erlang',
-    r: 'r',
-    rmd: 'r',
-    sol: 'solidity',
-    move: 'move',
-    ipynb: 'jupyter notebook',
-    sh: 'shell',
-    bash: 'shell',
-    zsh: 'shell',
-    html: 'html',
-    htm: 'html',
-    vue: 'vue',
-    svelte: 'svelte',
-  }
-
-  return languages[extension] ?? null
-}
-
-function addPackageManager(
-  packageManagers: Set<string>,
-  path: string
-) {
-  const name = path.split('/').pop()?.toLowerCase() ?? ''
-
-  if (name === 'package.json' || name === 'package-lock.json') {
-    packageManagers.add('npm')
-  }
-  if (name === 'yarn.lock') {
-    packageManagers.add('yarn')
-  }
-  if (name === 'pnpm-lock.yaml') {
-    packageManagers.add('pnpm')
-  }
-  if (
-    name === 'requirements.txt' ||
-    name === 'pyproject.toml' ||
-    name === 'setup.py' ||
-    name === 'pipfile' ||
-    name === 'pipfile.lock' ||
-    name === 'poetry.lock' ||
-    name === 'uv.lock'
-  ) {
-    packageManagers.add('pip')
-  }
-  if (name === 'go.mod') {
-    packageManagers.add('go modules')
-  }
-  if (name === 'cargo.toml') {
-    packageManagers.add('cargo')
-  }
-  if (name === 'pom.xml') {
-    packageManagers.add('maven')
-  }
-  if (name === 'build.gradle' || name === 'build.gradle.kts') {
-    packageManagers.add('gradle')
-  }
-  if (name === 'gemfile') {
-    packageManagers.add('bundler')
-  }
-  if (name === 'composer.json') {
-    packageManagers.add('composer')
-  }
-  if (name === 'mix.exs') {
-    packageManagers.add('mix')
-  }
-}
-
-function addFrameworks(
-  frameworks: Set<string>,
-  manifests: Manifest[]
-) {
-  const checks: Array<[string, RegExp]> = [
-    ['electron', /\belectron\b/i],
-    ['react', /\breact\b/i],
-    ['next.js', /\bnext(?:\.js)?\b/i],
-    ['vue', /\bvue(?:\.js)?\b/i],
-    ['angular', /\b@angular\b|\bangular\b/i],
-    ['svelte', /\bsvelte(?:kit)?\b/i],
-    ['express', /\bexpress\b/i],
-    ['hono', /\bhono\b/i],
-    ['fastify', /\bfastify\b/i],
-    ['nestjs', /\bnestjs\b|@nestjs\//i],
-    ['django', /\bdjango\b/i],
-    ['flask', /\bflask\b/i],
-    ['fastapi', /\bfastapi\b/i],
-    ['gin', /\bgin(?:-gonic)?\b/i],
-    ['actix', /\bactix(?:-web)?\b/i],
-    ['tauri', /\btauri\b/i],
-  ]
-
-  for (const manifest of manifests) {
-    for (const [framework, pattern] of checks) {
-      if (pattern.test(manifest.content)) {
-        frameworks.add(framework)
-      }
-    }
-  }
-}
-
-function addEntrypoint(
-  entrypoints: Set<string>,
-  path: string
-) {
-  if (!path || isLowConfidencePath(path)) {
-    return
-  }
-
-  const normalized = path.replace(/^\.\//, '')
-  if (normalized.length <= 300) {
-    entrypoints.add(normalized)
-  }
-}
-
-function directoryOf(file: string): string {
-  const separator = file.lastIndexOf('/')
-  return separator < 0 ? '' : file.slice(0, separator)
-}
-
-function packageEntrypoints(
-  entrypoints: Set<string>,
-  manifest: Manifest
-) {
-  if (!manifest.path.endsWith('package.json')) {
-    return
-  }
-
-  try {
-    const packageJson = JSON.parse(manifest.content) as {
-      main?: unknown
-      module?: unknown
-      bin?: unknown
-    }
-    const base = directoryOf(manifest.path)
-    const addPackagePath = (value: unknown) => {
-      if (typeof value !== 'string' || !value || value.startsWith('http')) {
-        return
-      }
-      addEntrypoint(
-        entrypoints,
-        `${base ? `${base}/` : ''}${value.replace(/^\.\//, '')}`
-      )
-    }
-
-    addPackagePath(packageJson.main)
-    addPackagePath(packageJson.module)
-    if (typeof packageJson.bin === 'string') {
-      addPackagePath(packageJson.bin)
-    } else if (packageJson.bin && typeof packageJson.bin === 'object') {
-      for (const value of Object.values(packageJson.bin)) {
-        addPackagePath(value)
-      }
-    }
-  } catch {
-    // An invalid manifest is still inventory evidence, but is not executed.
-  }
-}
-
-/**
- * STEP F — Turn the cheap file/manifests pass into a compact inventory. This
- * parses JSON as text only; it never installs or imports repository code.
- */
-function buildInventory(
-  fileCount: number,
-  files: string[],
-  manifests: Manifest[]
-): RepositoryInventory {
-  const languages = new Set<string>()
-  const packageManagers = new Set<string>()
-  const frameworks = new Set<string>()
-  const entrypoints = new Set<string>()
-
-  for (const file of files) {
-    const language = languageForPath(file)
-    if (language) {
-      languages.add(language)
-    }
-    addPackageManager(packageManagers, file)
-
-    const normalized = normalizePath(file)
-    if (
-      /(?:^|\/)(?:main|index|app|server|cli)\.(?:ts|tsx|js|jsx|mjs|cjs|py|go|rs|rb|php)$/i.test(
-        normalized
-      ) ||
-      /(?:^|\/)cmd\/[^/]+\.(?:go|rs)$/i.test(normalized)
-    ) {
-      addEntrypoint(entrypoints, normalized)
-    }
-  }
-
-  for (const manifest of manifests) {
-    addPackageManager(packageManagers, manifest.path)
-    packageEntrypoints(entrypoints, manifest)
-  }
-  addFrameworks(frameworks, manifests)
-
-  return {
-    languages: [...languages].sort(),
-    packageManagers: [...packageManagers].sort(),
-    frameworks: [...frameworks].sort(),
-    fileCount: Math.max(0, fileCount),
-    entrypoints: [...entrypoints].sort().slice(0, 50),
-  }
-}
-
 function parseSecretPresenceFinding(
   line: string,
   secretFindings: SecretPresenceFinding[]
@@ -1591,7 +1292,7 @@ function parseSecretPresenceFinding(
   const match = line.match(
     /^CODEVET_SECRET:([^:]+):([1-9][0-9]*):([^:]+):((?:sha256|hmac-sha256):[a-f0-9]{64})$/
   )
-  if (!match || secretFindings.length >= MAX_SECRET_FINDINGS) {
+  if (!match) {
     return
   }
 
@@ -1794,68 +1495,17 @@ function parseDiscoveryEvent(
  */
 export function parseScannerOutput(stdout: string): ScannerResult {
   const commitMatch = stdout.match(/^CODEVET_COMMIT:([0-9a-f]{40})$/m)
-  let fileCount = 0
-  const files: string[] = []
-  const manifests: Manifest[] = []
   const linesByFile = new Map<string, Map<number, string>>()
   const candidates: ScanCandidate[] = []
   const secretFindings: SecretPresenceFinding[] = []
   const imports: RepositoryImport[] = []
 
-  let inInventory = false
   let inDiscovery = false
   let category: CandidateCategory | null = null
 
   for (const line of stdout.split('\n')) {
     if (line.startsWith('CODEVET_SECRET:')) {
       parseSecretPresenceFinding(line, secretFindings)
-      continue
-    }
-
-    if (line === 'CODEVET_INVENTORY_BEGIN') {
-      inInventory = true
-      continue
-    }
-
-    if (line === 'CODEVET_INVENTORY_END') {
-      inInventory = false
-      continue
-    }
-
-    if (inInventory && line.startsWith('CODEVET_INVENTORY_COUNT:')) {
-      const count = Number(line.slice('CODEVET_INVENTORY_COUNT:'.length))
-      if (Number.isFinite(count)) {
-        fileCount = count
-      }
-      continue
-    }
-
-    if (inInventory && line.startsWith('CODEVET_FILE:')) {
-      const encodedPath = line.slice('CODEVET_FILE:'.length)
-      const path = normalizePath(
-        Buffer.from(encodedPath, 'base64').toString('utf8')
-      )
-      if (path && files.length < MAX_INVENTORY_FILES) {
-        files.push(path)
-      }
-      continue
-    }
-
-    if (inInventory && line.startsWith('CODEVET_MANIFEST:')) {
-      const encoded = line.slice('CODEVET_MANIFEST:'.length)
-      const separator = encoded.indexOf(':')
-      if (separator > 0 && manifests.length < MAX_MANIFESTS) {
-        const path = normalizePath(
-          Buffer.from(encoded.slice(0, separator), 'base64').toString('utf8')
-        )
-        const content = Buffer.from(
-          encoded.slice(separator + 1),
-          'base64'
-        ).toString('utf8')
-        if (path) {
-          manifests.push({ path, content: safeText(path, content, 20_000) })
-        }
-      }
       continue
     }
 
@@ -1901,13 +1551,11 @@ export function parseScannerOutput(stdout: string): ScannerResult {
     }
   }
 
-  const inventory = buildInventory(fileCount || files.length, files, manifests)
   const analysis = analyzeCandidates(candidates, linesByFile)
   // Regex discovery must never become a product vulnerability conclusion.
   // Secret presence is the sole independent deterministic product check;
   // every context-dependent security sink is left for Step 2 validation.
   const securityFindings = secretPresenceSecurityFindings(secretFindings)
-    .slice(0, MAX_FINDINGS)
   const candidateFlows = correlateFindings(
     analysis.behaviors,
     analysis.networkCalls,
@@ -1924,7 +1572,6 @@ export function parseScannerOutput(stdout: string): ScannerResult {
 
   return {
     commitSha: commitMatch?.[1] ?? null,
-    inventory,
     candidates,
     secretFindings,
     securityFindings,

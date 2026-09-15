@@ -82,19 +82,15 @@ flowchart TD
 
 ## Step 1: Configurable Limits
 
-Step 1 limits protect the sandbox and the host protocol. Only the scanner timeout is environment-configurable; all other limits are fixed safety caps in `src/checks/limits.ts`.
+Step 1 has one scan-work budget: its wall-clock deadline. It does not impose file, finding, candidate, or context quotas. A separate fixed output ceiling protects the worker protocol from a repository that emits excessive data.
 
 | Control | Default | Maximum | Effect |
 |---|---:|---:|---|
-| `CODEVET_SCANNER_TIMEOUT_SEC` | 600 seconds | 900 seconds | Stops the deterministic scan |
-| Sandbox output | 128 MB | fixed | Rejects excessive protocol output |
-| Path inventory | 100,000 paths | fixed | Caps emitted paths |
-| Metadata manifests | 100 × 20 KB | fixed | Caps manifest data sent to the host |
-| Sensitive-file scan | 10,000 findings; 1 MB/file | fixed | Caps local secret-presence scanning |
-| Discovery | 5 MB/file; 180 leads/category | fixed | Caps pattern-search input and leads |
-| Selected context | 120 candidates; 40/category; ±3 lines | fixed | Caps evidence returned from source |
+| `CODEVET_SCANNER_TIMEOUT_SEC` | 900 seconds | 1,200 seconds | Stops the deterministic scan |
+| Sandbox idle cleanup | 25 minutes | fixed | Cleans up abandoned workers after the active scan deadline |
+| Sandbox output | 128 MB | fixed | Bounds worker-protocol data |
 
-Environment values may lower the timeout or raise it only up to its listed maximum.
+Environment values may lower the scan deadline or raise it only up to its listed maximum.
 
 ## Step 2: Configurable Limits
 

@@ -106,17 +106,17 @@ async function runAgentPass(
     const result = await handle
     if (result.timedOut) {
       console.log(`[${uid}] AI analysis failed: timeout`)
-      return emptyAgentAnalysis('timeout', scannerResult.inventory.fileCount, 'Agent analysis timed out')
+      return emptyAgentAnalysis('timeout', 'Agent analysis timed out')
     }
     if (outputExceeded || result.truncated || Buffer.byteLength(result.stdout) > MAX_AGENT_OUTPUT_BYTES) {
       console.log(`[${uid}] AI analysis failed: output limit`)
-      return emptyAgentAnalysis('failed', scannerResult.inventory.fileCount, 'Agent returned invalid structured output')
+      return emptyAgentAnalysis('failed', 'Agent returned invalid structured output')
     }
     if (result.exitCode !== 0) {
       const diagnostic = redactSensitiveText(result.stderr).trim().slice(0, 1_000)
       console.log(`[${uid}] AI analysis failed: process error (exit ${result.exitCode})`)
       if (diagnostic) console.error(`[${uid}] AI analysis stderr: ${diagnostic}`)
-      return emptyAgentAnalysis('failed', scannerResult.inventory.fileCount, 'Agent analysis failed')
+      return emptyAgentAnalysis('failed', 'Agent analysis failed')
     }
     let metricDiagnostics = 'metrics unavailable'
     let inspectedFilesForFailure: string[] = []
@@ -163,7 +163,7 @@ async function runAgentPass(
       const reportOutput = await sandbox.files.read('/tmp/codevet-agent-report.json')
       const analysis = parseAgentOutput(
         reportOutput,
-        coverageForAgent(scannerResult.inventory.fileCount, filesInspected)
+        coverageForAgent(filesInspected)
       )
       const message =
         `[${uid}] AI analysis completed; supplied ${preloadedFiles} source file(s), ` +
@@ -186,7 +186,6 @@ async function runAgentPass(
       console.log(`[${uid}] AI analysis failed: invalid output (${reason.slice(0, 200)})`)
       return emptyAgentAnalysis(
         'failed',
-        scannerResult.inventory.fileCount,
         'Agent returned invalid structured output',
         inspectedFilesForFailure
       )
@@ -194,7 +193,7 @@ async function runAgentPass(
   } catch {
     // Do not expose provider errors, stderr, prompts, or raw model output.
     console.log(`[${uid}] AI ${role} pass failed`)
-    return emptyAgentAnalysis('failed', scannerResult.inventory.fileCount, 'Agent analysis failed')
+    return emptyAgentAnalysis('failed', 'Agent analysis failed')
   }
 }
 
@@ -224,7 +223,7 @@ export async function runSandboxStep2(
     step1Prompt + '\n</CODEVET_STEP1_PROMPT_AND_LEADS>\n<CODEVET_INVESTIGATOR_DRAFT>\n' +
     JSON.stringify(investigatorDraft) + '\n</CODEVET_INVESTIGATOR_DRAFT>'
   if (Buffer.byteLength(verifierPrompt) > MAX_VERIFIER_PROMPT_BYTES) {
-    return emptyAgentAnalysis('failed', scannerResult.inventory.fileCount, 'Verifier input exceeded budget')
+    return emptyAgentAnalysis('failed', 'Verifier input exceeded budget')
   }
   // Put every investigator citation ahead of general Step 1 leads so the
   // verifier receives the evidence it is expected to adjudicate.
@@ -252,7 +251,7 @@ export async function runSandboxStep2(
   ])]
   return {
     ...verification,
-    coverage: coverageForAgent(scannerResult.inventory.fileCount, inspectedFiles),
+    coverage: coverageForAgent(inspectedFiles),
   }
 }
 
