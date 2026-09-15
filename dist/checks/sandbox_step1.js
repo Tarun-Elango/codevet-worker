@@ -356,7 +356,6 @@ export const scannerTemplate = Sandbox.template()
             }
             matches.push(rendered)
             outputBytes += bytes
-            inspectedFiles.add(matchedFile)
           }
           const text = matches.length ? matches.join("") + (resultLimited ? "[grep results truncated]\\n" : "") : "No matches found."
           return { content: [{ type: "text", text }], details: { matchCount: matches.length, truncated: resultLimited } }
@@ -424,14 +423,15 @@ export const scannerTemplate = Sandbox.template()
           /(?:^|\\/)(?:main|index|app|server|cli)(?:\\.(?:[cm]?[jt]sx?|py|go|rs|rb|php))?$/i.test(path) ? 1 : 2
         fallback.sort((a, b) => fallbackRank(a) - fallbackRank(b) || a.split(sep).length - b.split(sep).length || a.localeCompare(b))
 
-        // Always reserve early slots for project metadata, then prioritize
-        // evidence-related paths and finally general source-code coverage.
+        // Honor caller-provided priorities first (the verifier's cited
+        // evidence precedes generic leads), then add metadata and general
+        // source-code coverage.
         const metadata = fallback.filter((path) =>
           /(?:^|\\/)(?:README(?:\\.[^/]*)?|package\\.json|pyproject\\.toml|requirements\\.txt|go\\.mod|Cargo\\.toml|pom\\.xml|Dockerfile[^/]*)$/i.test(path)
         ).slice(0, 3)
         const files = []
         const considered = new Set()
-        for (const path of [...metadata, ...requested, ...fallback]) {
+        for (const path of [...requested, ...metadata, ...fallback]) {
           if (files.length >= MAX_PRELOADED_FILES) break
           const target = await repositoryTarget(path)
           if (!target || considered.has(target)) continue

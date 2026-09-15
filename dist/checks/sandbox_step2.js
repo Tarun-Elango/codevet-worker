@@ -2,11 +2,11 @@ import { buildAgentFilePriorities, buildAgentPrompt, coverageForAgent, emptyAgen
 import { AGENT_SYSTEM_PROMPT, VERIFIER_SYSTEM_PROMPT, AGENT_TIMEOUT_SEC, MAX_AGENT_OUTPUT_BYTES, MAX_VERIFIER_PROMPT_BYTES, MIN_FILES_TO_INSPECT, } from './limits.js';
 /** Run one isolated Pi role. The investigator and verifier never share a Pi
  * session; the verifier receives bounded Step 1 leads, the draft, and repository tools. */
-async function runAgentPass(sandbox, uid, scannerResult, agent, prompt, systemPrompt, role) {
+async function runAgentPass(sandbox, uid, scannerResult, agent, priorityFiles, prompt, systemPrompt, role) {
     console.log(`[${uid}] Starting AI ${role} pass`);
     try {
         await sandbox.files.write('/tmp/codevet-agent-prompt', prompt);
-        await sandbox.files.write('/tmp/codevet-agent-paths.json', JSON.stringify(buildAgentFilePriorities(scannerResult)));
+        await sandbox.files.write('/tmp/codevet-agent-paths.json', JSON.stringify(priorityFiles));
         const command = `
       # The prompt is root-readable only. Pipe it into Pi before dropping
       # privileges so it is not another file the model can ask Pi to inspect.
@@ -160,7 +160,7 @@ async function runAgentPass(sandbox, uid, scannerResult, agent, prompt, systemPr
  * context and must independently check the investigator's cited source. */
 export async function runSandboxStep2(sandbox, uid, scannerResult, agent) {
     const step1Prompt = buildAgentPrompt(scannerResult);
-    const investigation = await runAgentPass(sandbox, uid, scannerResult, agent, step1Prompt, AGENT_SYSTEM_PROMPT, 'investigator');
+    const investigation = await runAgentPass(sandbox, uid, scannerResult, agent, buildAgentFilePriorities(scannerResult), step1Prompt, AGENT_SYSTEM_PROMPT, 'investigator');
     if (investigation.status !== 'completed')
         return investigation;
     // Coverage is trusted runtime metadata rather than investigator-authored
@@ -175,7 +175,23 @@ export async function runSandboxStep2(sandbox, uid, scannerResult, agent) {
     if (Buffer.byteLength(verifierPrompt) > MAX_VERIFIER_PROMPT_BYTES) {
         return emptyAgentAnalysis('failed', scannerResult.inventory.fileCount, 'Verifier input exceeded budget');
     }
-    const verification = await runAgentPass(sandbox, uid, scannerResult, agent, verifierPrompt, VERIFIER_SYSTEM_PROMPT, 'verifier');
+    // Put every investigator citation ahead of general Step 1 leads so the
+    // verifier receives the evidence it is expected to adjudicate.
+    const citedFiles = [
+        ...investigation.securityIssues.flatMap((finding) => [
+            finding.file,
+            ...(finding.relatedFiles ?? []),
+            ...finding.evidence.map((evidence) => evidence.file),
+        ]),
+        ...investigation.suspiciousBehaviors.flatMap((finding) => [
+            finding.file,
+            ...(finding.relatedFiles ?? []),
+            ...finding.evidence.map((evidence) => evidence.file),
+        ]),
+        ...investigation.externalServices.flatMap((service) => service.file ? [service.file] : []),
+    ];
+    const verifierPriorities = [...new Set([...citedFiles, ...buildAgentFilePriorities(scannerResult)])];
+    const verification = await runAgentPass(sandbox, uid, scannerResult, agent, verifierPriorities, verifierPrompt, VERIFIER_SYSTEM_PROMPT, 'verifier');
     const inspectedFiles = [...new Set([
             ...investigation.coverage.inspectedFiles,
             ...verification.coverage.inspectedFiles,

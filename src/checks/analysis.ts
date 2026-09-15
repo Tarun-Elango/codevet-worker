@@ -747,8 +747,29 @@ export function parseAgentOutput(
       }
     })
   }
-  const suspiciousBehaviors = list(value.suspiciousBehaviors, false) as AgentAnalysis['suspiciousBehaviors']
-  const securityIssues = list(value.securityIssues, true) as AgentAnalysis['securityIssues']
+  const rawSuspiciousBehaviors = list(value.suspiciousBehaviors, false) as AgentAnalysis['suspiciousBehaviors']
+  const rawSecurityIssues = list(value.securityIssues, true) as AgentAnalysis['securityIssues']
+  // Normalize model ordering and repeated claims in trusted code. Security
+  // issues win collisions because they carry the stronger classification.
+  const compareFindings = (
+    a: { category: string; file: string; line: number },
+    b: { category: string; file: string; line: number }
+  ) => a.category.localeCompare(b.category) || a.file.localeCompare(b.file) || a.line - b.line
+  const findingKey = (finding: { category: string; file: string; line: number }) =>
+    `${finding.category}\u0000${finding.file}\u0000${finding.line}`
+  const seenFindings = new Set<string>()
+  const securityIssues = [...rawSecurityIssues].sort(compareFindings).filter((finding) => {
+    const key = findingKey(finding)
+    if (seenFindings.has(key)) return false
+    seenFindings.add(key)
+    return true
+  })
+  const suspiciousBehaviors = [...rawSuspiciousBehaviors].sort(compareFindings).filter((finding) => {
+    const key = findingKey(finding)
+    if (seenFindings.has(key)) return false
+    seenFindings.add(key)
+    return true
+  })
   if (!Array.isArray(value.externalServices) || value.externalServices.length > MAX_AGENT_ITEMS) throw new Error('invalid services')
   const externalServices = value.externalServices.map((item) => {
     if (!item || typeof item !== 'object' || Array.isArray(item)) throw new Error('invalid service')
@@ -768,29 +789,32 @@ export function parseAgentOutput(
     repositoryContext = { ...(purpose ? { purpose } : {}), ...(applicationType ? { applicationType } : {}), ...(mainComponents ? { mainComponents } : {}) }
   }
   // A model cannot turn a tiny sample of a very large repository into a
-  // repository-level clean result. Preserve its findings and risk assessment,
-  // but fail closed when more than 1,000 files remain unread and trusted
-  // coverage meets neither the absolute nor relative minimum.
+  // repository-level clean result. Normalize conclusions from trusted coverage
+  // and findings so formatting contradictions cannot affect the final report.
   const uninspectedFiles = Math.max(0, coverage.repositoryFiles - coverage.filesInspected)
   const coverageRatio = coverage.repositoryFiles > 0
     ? coverage.filesInspected / coverage.repositoryFiles
     : 1
   const enoughAbsoluteCoverage = coverage.filesInspected >= 50
   const enoughRelativeCoverage = coverageRatio >= 0.005
-  const verdict = value.verdict === 'no_major_concerns_found' &&
-    uninspectedFiles > 1_000 &&
+  const coverageInsufficient = uninspectedFiles > 1_000 &&
     !enoughAbsoluteCoverage &&
     !enoughRelativeCoverage
-    ? 'inconclusive'
-    : value.verdict as AgentAnalysis['verdict']
+  const hasFindings = suspiciousBehaviors.length > 0 || securityIssues.length > 0
+  let verdict = value.verdict as AgentAnalysis['verdict']
+  if (securityIssues.length > 0) verdict = 'concerns_found'
+  else if (!hasFindings && coverageInsufficient) verdict = 'inconclusive'
+  const overallRisk = hasFindings && value.overallRisk === 'none'
+    ? 'unknown'
+    : value.overallRisk as AgentAnalysis['overallRisk']
   const coverageNote = 'The trusted coverage check changed the AI verdict to inconclusive because too little of a large repository was inspected.'
-  const coverageNotes = verdict !== value.verdict
+  const coverageNotes = verdict === 'inconclusive' && verdict !== value.verdict
     ? notes.length < MAX_AGENT_ITEMS
       ? [...notes, coverageNote]
       : [...notes.slice(0, MAX_AGENT_ITEMS - 1), coverageNote]
     : notes
 
-  return { status: 'completed', verdict, summary, overallRisk: value.overallRisk as AgentAnalysis['overallRisk'], coverage, ...(repositoryContext ? { repositoryContext } : {}), suspiciousBehaviors, securityIssues, externalServices, notes: coverageNotes }
+  return { status: 'completed', verdict, summary, overallRisk, coverage, ...(repositoryContext ? { repositoryContext } : {}), suspiciousBehaviors, securityIssues, externalServices, notes: coverageNotes }
 }
 
 function secretLabel(key: string): string {

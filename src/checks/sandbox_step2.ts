@@ -24,6 +24,7 @@ async function runAgentPass(
   uid: string,
   scannerResult: ScannerResult,
   agent: { provider: string; model: string; apiKey: string; piKeyEnv: string },
+  priorityFiles: string[],
   prompt: string,
   systemPrompt: string,
   role: 'investigator' | 'verifier'
@@ -33,7 +34,7 @@ async function runAgentPass(
     await sandbox.files.write('/tmp/codevet-agent-prompt', prompt)
     await sandbox.files.write(
       '/tmp/codevet-agent-paths.json',
-      JSON.stringify(buildAgentFilePriorities(scannerResult))
+      JSON.stringify(priorityFiles)
     )
     const command = `
       # The prompt is root-readable only. Pipe it into Pi before dropping
@@ -207,7 +208,7 @@ export async function runSandboxStep2(
 ): Promise<AgentAnalysis> {
   const step1Prompt = buildAgentPrompt(scannerResult)
   const investigation = await runAgentPass(
-    sandbox, uid, scannerResult, agent, step1Prompt,
+    sandbox, uid, scannerResult, agent, buildAgentFilePriorities(scannerResult), step1Prompt,
     AGENT_SYSTEM_PROMPT, 'investigator'
   )
   if (investigation.status !== 'completed') return investigation
@@ -225,8 +226,24 @@ export async function runSandboxStep2(
   if (Buffer.byteLength(verifierPrompt) > MAX_VERIFIER_PROMPT_BYTES) {
     return emptyAgentAnalysis('failed', scannerResult.inventory.fileCount, 'Verifier input exceeded budget')
   }
+  // Put every investigator citation ahead of general Step 1 leads so the
+  // verifier receives the evidence it is expected to adjudicate.
+  const citedFiles = [
+    ...investigation.securityIssues.flatMap((finding) => [
+      finding.file,
+      ...(finding.relatedFiles ?? []),
+      ...finding.evidence.map((evidence) => evidence.file),
+    ]),
+    ...investigation.suspiciousBehaviors.flatMap((finding) => [
+      finding.file,
+      ...(finding.relatedFiles ?? []),
+      ...finding.evidence.map((evidence) => evidence.file),
+    ]),
+    ...investigation.externalServices.flatMap((service) => service.file ? [service.file] : []),
+  ]
+  const verifierPriorities = [...new Set([...citedFiles, ...buildAgentFilePriorities(scannerResult)])]
   const verification = await runAgentPass(
-    sandbox, uid, scannerResult, agent, verifierPrompt,
+    sandbox, uid, scannerResult, agent, verifierPriorities, verifierPrompt,
     VERIFIER_SYSTEM_PROMPT, 'verifier'
   )
   const inspectedFiles = [...new Set([
