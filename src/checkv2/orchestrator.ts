@@ -220,10 +220,24 @@ async function parseReport(sandbox: CheckV2Sandbox, stdout: string): Promise<Age
   if (!Array.isArray(report.findings) || !Array.isArray(report.inspectedFiles) || report.findings.length > 50 || report.inspectedFiles.length > 500) {
     throw new Error('Invalid report arrays')
   }
+  // A model occasionally emits one incomplete object alongside otherwise
+  // valid findings (for example, omitting evidence). Never persist that claim,
+  // but do not throw away the complete scan because of it. `rejectedFindingCount`
+  // keeps the caller from treating an incomplete verifier response as clean.
+  const findings: Finding[] = []
+  let rejectedFindingCount = 0
+  for (const finding of report.findings) {
+    try {
+      findings.push(parseFinding(finding))
+    } catch {
+      rejectedFindingCount += 1
+    }
+  }
   const parsed: AgentReport = {
     summary: text(report.summary, 'summary'),
-    findings: report.findings.map(parseFinding),
+    findings,
     inspectedFiles: [...new Set(report.inspectedFiles.map(relativePath))],
+    rejectedFindingCount,
   }
   return verifyLocations(sandbox, parsed)
 }
@@ -311,6 +325,7 @@ export async function runScannerContainer(
         candidates,
         investigation: null,
         findings: [],
+        verificationComplete: false,
         summary: 'Static candidate discovery completed; AI investigation is not configured.',
       }
     }
@@ -326,6 +341,7 @@ export async function runScannerContainer(
       candidates,
       investigation,
       findings: verification.findings,
+      verificationComplete: verification.rejectedFindingCount === 0,
       summary: verification.summary,
     }
   } finally {

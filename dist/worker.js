@@ -41,7 +41,7 @@ function summaryForResult(result) {
 }
 function overallRiskForResult(result) {
     // Candidate discovery alone is not evidence that the repository is safe.
-    if (!result.investigation)
+    if (!result.investigation || !result.verificationComplete)
         return 'unknown';
     if (result.findings.length === 0)
         return 'none';
@@ -172,6 +172,7 @@ export async function processRequest(pool, channel, msg, job) {
         const storedFindings = {
             candidates: scannerResult.candidates,
             investigation: scannerResult.investigation,
+            verificationComplete: scannerResult.verificationComplete,
             findings: scannerResult.findings,
         };
         await lockClient.query(`

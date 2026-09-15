@@ -76,7 +76,7 @@ function overallRiskForResult(
   result: CheckV2Result
 ): 'none' | 'low' | 'medium' | 'high' | 'critical' | 'unknown' {
   // Candidate discovery alone is not evidence that the repository is safe.
-  if (!result.investigation) return 'unknown'
+  if (!result.investigation || !result.verificationComplete) return 'unknown'
   if (result.findings.length === 0) return 'none'
 
   const severityRank = { low: 1, medium: 2, high: 3, critical: 4 } as const
@@ -269,6 +269,7 @@ export async function processRequest(
     const storedFindings = {
       candidates: scannerResult.candidates,
       investigation: scannerResult.investigation,
+      verificationComplete: scannerResult.verificationComplete,
       findings: scannerResult.findings,
     }
 

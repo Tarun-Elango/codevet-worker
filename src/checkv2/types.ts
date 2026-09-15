@@ -51,8 +51,11 @@ export type Finding = {
 
 export type AgentReport = {
   summary: string
+  /** Only schema-valid, source-cited findings are retained. */
   findings: Finding[]
   inspectedFiles: string[]
+  /** Malformed model claims dropped by the trusted protocol parser. */
+  rejectedFindingCount: number
 }
 
 /**
@@ -65,6 +68,8 @@ export type CheckV2Result = {
   candidates: Candidate[]
   investigation: AgentReport | null
   findings: Finding[]
+  /** False when the final model response contained malformed claims. */
+  verificationComplete: boolean
   summary: string
 }
 
