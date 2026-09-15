@@ -97,15 +97,17 @@ for (const [kind, pattern] of Object.entries(patterns)) {
 // Semgrep supplies an independent set of rule-based anchors. Failure (for
 // example an unavailable community ruleset) must not discard ripgrep leads.
 const semgrep = spawnSync('semgrep', ['--config', 'auto', '--json', '--quiet', '.'], { encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 })
-try {
-  const report = JSON.parse(semgrep.stdout)
-  for (const result of report.results ?? []) {
-    add({
-      kind: 'semgrep', file: result.path, line: result.start?.line,
-      text: result.extra?.lines ?? result.extra?.message ?? '', rule: result.check_id,
-    })
-  }
-} catch { /* Semgrep is advisory discovery, not a required scanner protocol. */ }
+if (!semgrep.error && typeof semgrep.stdout === 'string') {
+  try {
+    const report = JSON.parse(semgrep.stdout)
+    for (const result of report.results ?? []) {
+      add({
+        kind: 'semgrep', file: result.path, line: result.start?.line,
+        text: result.extra?.lines ?? result.extra?.message ?? '', rule: result.check_id,
+      })
+    }
+  } catch { /* Semgrep is advisory discovery, not a required scanner protocol. */ }
+}
 // Round-robin selection preserves a useful lead from every category instead
 // of letting noisy early patterns consume the complete candidate budget.
 const candidates = []
@@ -123,13 +125,14 @@ for (let index = 0; candidates.length < LIMIT; index += 1) {
 await writeFile('/tmp/checkv2-candidates.json', JSON.stringify(candidates), { mode: 0o600 })
 `;
 export const checkV2Template = Sandbox.template()
-    .withPackages('git', 'ripgrep', 'semgrep', 'nodejs', 'npm', 'ca-certificates', 'util-linux', 'passwd')
+    .withPackages('git', 'ripgrep', 'nodejs', 'npm', 'python3', 'python3-pip', 'ca-certificates', 'util-linux', 'passwd')
     .run(`
     set -eu
     useradd --create-home --uid 10001 --shell /bin/sh scanner
     mkdir -p /workspace /opt/checkv2
     chown scanner:scanner /workspace
     npm install -g --ignore-scripts @earendil-works/pi-coding-agent@${PI_VERSION}
+    python3 -m pip install --no-cache-dir --break-system-packages semgrep
   `)
     .run(`
     cat > /opt/checkv2/repository-tools.js <<'EOF'
