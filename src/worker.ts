@@ -2,6 +2,7 @@ import type { Channel, ConsumeMessage } from 'amqplib'
 import type { Pool, PoolClient } from 'pg'
 
 import { runScannerContainer, SCANNER_VERSION } from './checks/orchestrator.js'
+import type { ScannerResult } from './checks/analysis.js'
 
 /**
  * STEP A — The queue message is the only input crossing into the trusted
@@ -61,6 +62,25 @@ export function validateRepoUrl(repoUrl: string): URL {
 
 function repoIdentifierFromUrl(repoUrl: URL): string {
   return repoUrl.pathname.replace(/^\//, '').replace(/\.git$/, '')
+}
+
+/** Provide a useful persisted summary when the optional AI summary is null. */
+function summaryForResult(result: ScannerResult): string {
+  const agentSummary = result.agentAnalysis?.summary?.trim()
+  if (agentSummary) return agentSummary
+
+  const aiIssueCount = result.agentAnalysis?.securityIssues.length ?? 0
+  const behaviorCount = result.agentAnalysis?.suspiciousBehaviors.length ?? 0
+  const primaryFinding =
+    result.agentAnalysis?.securityIssues[0]?.description ??
+    result.securityFindings[0]?.title ??
+    result.agentAnalysis?.suspiciousBehaviors[0]?.description
+  const risk = result.agentAnalysis?.overallRisk ?? 'unknown'
+
+  return [
+    `Risk: ${risk}. Found ${result.securityFindings.length} deterministic finding(s), ${aiIssueCount} AI security issue(s), and ${behaviorCount} suspicious behavior(s).`,
+    ...(primaryFinding ? [`Primary finding: ${primaryFinding}`] : []),
+  ].join(' ')
 }
 
 // Resolve either GitHub's default branch or a ref selected in a /tree/ URL.
@@ -288,7 +308,7 @@ export async function processRequest(
         repoIdentifier,
         validatedRepoUrl.toString(),
         commitSha,
-        scannerResult.agentAnalysis?.summary ?? null,
+        summaryForResult(scannerResult),
         JSON.stringify(storedFindings),
         SCANNER_VERSION,
         scannerResult.agentAnalysis?.overallRisk ?? 'unknown',

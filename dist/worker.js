@@ -32,6 +32,22 @@ export function validateRepoUrl(repoUrl) {
 function repoIdentifierFromUrl(repoUrl) {
     return repoUrl.pathname.replace(/^\//, '').replace(/\.git$/, '');
 }
+/** Provide a useful persisted summary when the optional AI summary is null. */
+function summaryForResult(result) {
+    const agentSummary = result.agentAnalysis?.summary?.trim();
+    if (agentSummary)
+        return agentSummary;
+    const aiIssueCount = result.agentAnalysis?.securityIssues.length ?? 0;
+    const behaviorCount = result.agentAnalysis?.suspiciousBehaviors.length ?? 0;
+    const primaryFinding = result.agentAnalysis?.securityIssues[0]?.description ??
+        result.securityFindings[0]?.title ??
+        result.agentAnalysis?.suspiciousBehaviors[0]?.description;
+    const risk = result.agentAnalysis?.overallRisk ?? 'unknown';
+    return [
+        `Risk: ${risk}. Found ${result.securityFindings.length} deterministic finding(s), ${aiIssueCount} AI security issue(s), and ${behaviorCount} suspicious behavior(s).`,
+        ...(primaryFinding ? [`Primary finding: ${primaryFinding}`] : []),
+    ].join(' ');
+}
 // Resolve either GitHub's default branch or a ref selected in a /tree/ URL.
 /**
  * STEP B — Resolve a branch to an immutable commit before creating a sandbox.
@@ -193,7 +209,7 @@ export async function processRequest(pool, channel, msg, job) {
             repoIdentifier,
             validatedRepoUrl.toString(),
             commitSha,
-            scannerResult.agentAnalysis?.summary ?? null,
+            summaryForResult(scannerResult),
             JSON.stringify(storedFindings),
             SCANNER_VERSION,
             scannerResult.agentAnalysis?.overallRisk ?? 'unknown',
