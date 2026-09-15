@@ -1,4 +1,4 @@
-import { runScannerContainer, SCANNER_VERSION } from './checks/orchestrator.js';
+import { runScannerContainer, SCANNER_VERSION } from './checksv2/orchestrator.js';
 function parseRepoUrl(repoUrl) {
     const url = new URL(repoUrl);
     if (url.protocol !== 'https:' || url.hostname !== 'github.com') {

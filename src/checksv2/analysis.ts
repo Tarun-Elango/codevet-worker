@@ -1,13 +1,10 @@
 import {
   MAX_AGENT_ITEMS,
-  MAX_AGENT_LLM_TURNS,
   MAX_AGENT_OUTPUT_BYTES,
   MAX_AGENT_PRELOADED_FILES,
   MAX_AGENT_PROMPT_BYTES,
   MAX_AGENT_PROMPT_STRING_BYTES,
-  MAX_AGENT_READ_BYTES,
   MAX_AGENT_STRING_LENGTH,
-  MAX_AGENT_TOOL_CALLS,
 } from './limits.js'
 
 export type Severity = 'low' | 'medium' | 'high'
@@ -151,12 +148,6 @@ export type AgentAnalysis = {
   verdict: 'concerns_found' | 'no_major_concerns_found' | 'inconclusive'
   overallRisk: 'none' | 'low' | 'medium' | 'high' | 'critical' | 'unknown'
   summary: string | null
-  coverage: {
-    repositoryFiles: number
-    filesInspected: number
-    inspectedFiles: string[]
-    limitations: string[]
-  }
   repositoryContext?: {
     purpose?: string
     applicationType?: string
@@ -388,37 +379,15 @@ export function configuredAgent(): { provider: string; model: string; apiKey: st
   return { provider, model, apiKey, piKeyEnv }
 }
 
-export function coverageForAgent(inspectedFiles: string[] = []): AgentAnalysis['coverage'] {
-  const limitations = [
-    `Each AI pass is limited to ${MAX_AGENT_READ_BYTES / 1024} KB of model-visible repository content and ${MAX_AGENT_TOOL_CALLS} inspection tool calls. Finalization is requested after ${MAX_AGENT_LLM_TURNS} model turns per pass.`,
-    'Coverage is recorded by the trusted scanner across both AI passes; the model does not self-report inspected files.',
-  ]
-  limitations.push(
-    'Repository-wide file coverage is unavailable because CodeVet does not inventory repository paths.'
-  )
-  limitations.push(
-    'Deterministic discovery ignores generated/dependency directories and files over 1 MB, and retains only the highest-ranked matches when evidence caps are reached.'
-  )
-
-  return {
-    repositoryFiles: 0,
-    filesInspected: inspectedFiles.length,
-    inspectedFiles,
-    limitations,
-  }
-}
-
 export function emptyAgentAnalysis(
   status: 'failed' | 'timeout',
-  error?: string,
-  inspectedFiles: string[] = []
+  error?: string
 ): AgentAnalysis {
   return {
     status,
     verdict: 'inconclusive',
     summary: null,
     overallRisk: 'unknown',
-    coverage: coverageForAgent(inspectedFiles),
     suspiciousBehaviors: [],
     securityIssues: [],
     externalServices: [],
@@ -615,7 +584,6 @@ function boundedConfidence(value: unknown): number | undefined {
 /** Strictly validate and bound all model-originated fields before persistence. */
 export function parseAgentOutput(
   stdout: string,
-  coverage: AgentAnalysis['coverage'] = coverageForAgent(),
   trustedFiles?: ReadonlyMap<string, number> | ReadonlySet<string>
 ): AgentAnalysis {
   if (Buffer.byteLength(stdout) > MAX_AGENT_OUTPUT_BYTES) throw new Error('agent output too large')
@@ -740,33 +708,16 @@ export function parseAgentOutput(
     if (Object.keys(x).some((key) => !['purpose', 'applicationType', 'mainComponents'].includes(key)) || (x.purpose != null && !purpose) || (x.applicationType != null && !applicationType) || (x.mainComponents != null && !mainComponents)) throw new Error('invalid context fields')
     repositoryContext = { ...(purpose ? { purpose } : {}), ...(applicationType ? { applicationType } : {}), ...(mainComponents ? { mainComponents } : {}) }
   }
-  // A model cannot turn a tiny sample of a very large repository into a
-  // repository-level clean result. Normalize conclusions from trusted coverage
-  // and findings so formatting contradictions cannot affect the final report.
-  const uninspectedFiles = Math.max(0, coverage.repositoryFiles - coverage.filesInspected)
-  const coverageRatio = coverage.repositoryFiles > 0
-    ? coverage.filesInspected / coverage.repositoryFiles
-    : 1
-  const enoughAbsoluteCoverage = coverage.filesInspected >= 50
-  const enoughRelativeCoverage = coverageRatio >= 0.005
-  const coverageInsufficient = uninspectedFiles > 1_000 &&
-    !enoughAbsoluteCoverage &&
-    !enoughRelativeCoverage
+  // Security issues take precedence over a contradictory model verdict.
   const hasFindings = suspiciousBehaviors.length > 0 || securityIssues.length > 0
-  let verdict = value.verdict as AgentAnalysis['verdict']
-  if (securityIssues.length > 0) verdict = 'concerns_found'
-  else if (!hasFindings && coverageInsufficient) verdict = 'inconclusive'
+  const verdict = securityIssues.length > 0
+    ? 'concerns_found'
+    : value.verdict as AgentAnalysis['verdict']
   const overallRisk = hasFindings && value.overallRisk === 'none'
     ? 'unknown'
     : value.overallRisk as AgentAnalysis['overallRisk']
-  const coverageNote = 'The trusted coverage check changed the AI verdict to inconclusive because too little of a large repository was inspected.'
-  const coverageNotes = verdict === 'inconclusive' && verdict !== value.verdict
-    ? notes.length < MAX_AGENT_ITEMS
-      ? [...notes, coverageNote]
-      : [...notes.slice(0, MAX_AGENT_ITEMS - 1), coverageNote]
-    : notes
 
-  return { status: 'completed', verdict, summary, overallRisk, coverage, ...(repositoryContext ? { repositoryContext } : {}), suspiciousBehaviors, securityIssues, externalServices, notes: coverageNotes }
+  return { status: 'completed', verdict, summary, overallRisk, ...(repositoryContext ? { repositoryContext } : {}), suspiciousBehaviors, securityIssues, externalServices, notes }
 }
 
 function secretLabel(key: string): string {
