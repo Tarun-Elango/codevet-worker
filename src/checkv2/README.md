@@ -5,7 +5,7 @@
 Pipeline:
 
 1. A trusted Railway sandbox fetches the exact commit without running repository code.
-2. Trusted `ripgrep` and Semgrep produce compact candidate anchors for suspicious behavior.
+2. Trusted `ripgrep` and Semgrep produce compact candidate anchors across the existing scanner's suspicious-behavior taxonomy: input capture, credentials, telemetry, system access, network/process/filesystem activity, dynamic code, supply-chain abuse, persistence, obfuscation, destructive commands, CI, and major security sinks.
 3. An investigator Pi session explores the checkout using only `read`, `grep`, `find`, and `ls`, then returns cited candidate findings.
 4. A fresh verifier session independently reopens those paths and returns the final findings.
 

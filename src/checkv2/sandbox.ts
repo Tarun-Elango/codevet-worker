@@ -50,35 +50,48 @@ import { spawnSync } from 'node:child_process'
 
 const LIMIT = 250
 const patterns = {
-  keyboard: "addEventListener\\s*\\(\\s*['\"](?:key(?:down|up|press)|keypress)|onkey(?:down|up|press)|globalShortcut|keylog(?:ger|ging)?",
-  clipboard: "navigator\\.clipboard|clipboard\\.(?:read|write)|pasteboard|GetClipboardData",
-  microphone: "getUserMedia|MediaRecorder|microphone|AudioRecord|RECORD_AUDIO",
-  credentials: "(?:password|credential|token|api[_-]?key|secret)[^\\n]{0,120}(?:fetch|axios|request|send|log|write)",
-  network: "\\b(?:fetch|axios|got|request|http|https|grpc|sendBeacon|WebSocket|XMLHttpRequest|curl|wget)\\b",
-  process: "\\b(?:exec|execFile|spawn|fork|subprocess\\.(?:run|Popen)|os\\.system)\\s*\\(",
-  filesystem: "\\b(?:readFile|writeFile|createReadStream|createWriteStream|readdir|unlink|rm|sendFile)\\s*\\(",
-  dynamic_code: "\\b(?:eval|Function|vm\\.runIn|pickle\\.loads|yaml\\.load|unserialize)\\s*\\(",
-  persistence: "(?:crontab|systemctl\\s+enable|launchctl|schtasks|CurrentVersion\\\\Run|LaunchAgents)",
-  obfuscation: "(?:atob|fromCharCode|b64decode|FromBase64String).{0,120}(?:eval|exec|Function)|(?:eval|exec|Function).{0,120}(?:atob|base64)",
-  security: "(?:innerHTML\\s*=|dangerouslySetInnerHTML|pull_request_target|permissions\\s*:\\s*write-all|curl.+\\|\\s*(?:sh|bash))",
+  // Capability and collection anchors from the existing scanner taxonomy.
+  keyboard: "addEventListener\\s*\\(\\s*['\"\\x60](?:key(?:down|up|press)|keypress)|onkey(?:down|up|press)\\s*=|globalShortcut|RegisterHotKey|keylog(?:ger|ging)?|keystroke",
+  clipboard: "navigator\\.clipboard|clipboard\\.(?:read|write)|pasteboard|xclip|pbcopy|GetClipboardData",
+  microphone: "getUserMedia|mediaDevices|MediaRecorder|microphone|micPermission|AVAudioRecorder|AVAudioEngine|AVCapture(?:Device|Session)|AudioRecord|RECORD_AUDIO|pyaudio|sounddevice",
+  credentials: "navigator\\.credentials|(?:browser|chrome)\\.(?:cookies|passwords)|keytar\\.(?:getPassword|findCredentials)|CredentialManager|\\.ssh|id_(?:rsa|dsa|ecdsa|ed25519)|keychain|Keychains|(?:querySelector|getElementById|FormData|localStorage|sessionStorage|\\.value\\b)[^\\n]{0,100}\\b(?:password|passwd|credential|token|api[_-]?key|secret)\\b|\\b(?:password|passwd|credential|token|api[_-]?key|secret|private[_-]?key)\\b",
+  credential_logging: "(?:console|logger|log)\\s*\\.\\s*(?:log|info|debug|warn|error)\\s*\\([^\\n]{0,300}\\b(?:password|passwd|credential|token|api[_-]?key|secret|private[_-]?key)s?\\b",
+  tracking: "(?:analytics|telemetry|tracking)\\s*(?:\\.|\\(|\\[)|(?:track|identify|capture|fingerprint)\\s*\\(|(?:deviceId|machineId|usage[_ -]?collection)",
+  system_access: "getDisplayMedia|camera|CAMERA|screenCapture|desktopCapturer|mouse(?:move|down|up|click)?|screencapture|navigator\\.mediaDevices\\.getUserMedia\\s*\\([^)]*video|AVCapture(?:Device|Session)|document\\.cookie|cookies?|(?:browser|chrome)[_ -]?(?:history|profile|profiles)|saved[_ -]?passwords?|(?:os\\.|process\\.)?(?:homedir|hostname|platform|arch)\\s*\\(|Documents|\\.env\\b|\\.ssh|ssh[_ -]?keys?|private[_ -]?keys?|certificates?|keychains?|hostname|mac[_ -]?address|hardware[_ -]?id|device[_ -]?id|gps|geo(?:location)?|process(?:es)?|running[_ -]?(?:processes|applications)|startup[_ -]?items?|launch[_ -]?agents?|registry[_ -]?Run|cron|systemd|sudo|administrator[_ -]?elevation|setuid|UAC|FFI|Win32|syscalls?|/proc|/dev|readdir(?:Sync)?\\s*\\([^)]*(?:Library/Keychains|AppData|Documents)",
+  network: "\\b(?:fetch|axios|got|request|http|https|grpc|requests?|httpx|aiohttp|urllib|reqwest)\\s*(?:\\.|\\()|sendBeacon\\s*\\(|new\\s+WebSocket\\s*\\(|XMLHttpRequest|\\b(?:curl|wget)\\b|\\b(?:net\\.)?connect\\s*\\(|\\bsocket\\s*\\(|\\b(?:HttpClient|OkHttp|Net::HTTP)\\b",
+  process: "\\b(?:exec|execFile|spawn|fork)\\s*\\(|\\bchild_process\\s*\\.|\\bsubprocess\\.(?:run|Popen|call)\\s*\\(|\\bos\\.system\\s*\\(|\\beval\\s*\\(|new\\s+Function\\s*\\(|powershell|osascript",
+  filesystem: "\\b(?:readFile|writeFile|createReadStream|createWriteStream|open|readdir|unlink|rm|rmdir|sendFile|download)\\s*\\(|\\b(?:fs|path)\\.(?:read|write|open|resolve|join|unlink|rm)",
+  dynamic_code: "\\b(?:eval|Function|vm\\.runIn|pickle\\.loads?|yaml\\.load|unserialize|ObjectInputStream|BinaryFormatter|Marshal\\.load)\\s*\\(",
+  // Supply-chain/host-abuse anchors include download-and-execute, persistence,
+  // reverse shells, obfuscation, cryptomining, destructive commands, and CI.
+  supply_chain: "(?:preinstall|install|postinstall|prepare)[^\\n]{0,180}(?:curl|wget|Invoke-WebRequest|fetch|b64decode|FromBase64String|eval|exec|spawn)|(?:fetch|curl|wget)[^\\n]{0,180}(?:exec|spawn|bash|sh|chmod\\s+\\+x)|(?:curl|wget|Invoke-WebRequest)[^\\n]{0,300}(?:\\|\\s*(?:sh|bash)|powershell)|/dev/tcp|nc\\s+[^\\n]*\\s-e\\s|bash\\s+-i|TcpClient|DownloadString|stratum\\+tcp|xmrig|cryptonight|monero|coinhive",
+  persistence: "crontab|/etc/cron|systemctl\\s+enable|launchctl\\s+load|LaunchAgents|CurrentVersion\\\\Run|schtasks\\s+/create",
+  obfuscation: "(?:eval|Function|exec|powershell)\\s*\\([^\\n]{0,100}(?:atob|fromCharCode|base64|b64decode|FromBase64String)|(?:atob|b64decode|FromBase64String)\\s*\\([^\\n]{0,100}\\)(?:[^\\n]{0,80})(?:eval|exec)",
+  destructive: "rm\\s+-rf\\s+(?:/|~|\\$HOME)|del\\s+/s\\s+/q|Remove-Item[^\\n]*-Recurse[^\\n]*-Force|mkfs\\.|dd\\s+if=.*\\s+of=/dev/",
+  security: "(?:\\b(?:eval|exec|execFile|spawn|os\\.system|subprocess\\.(?:run|Popen|call))\\s*\\([^\\n]*(?:req(?:uest)?\\.|ctx\\.|params|query|body|argv)|new\\s+Function\\s*\\([^\\n]*(?:req(?:uest)?\\.|ctx\\.|params|query|body)|(?:pickle\\.loads?|yaml\\.load|unserialize|ObjectInputStream|BinaryFormatter)\\s*\\([^\\n]*(?:req(?:uest)?\\.|ctx\\.|params|query|body)|(?:jwt\\.(?:verify|decode)|verify_signature|algorithms?)\\b[^\\n]*(?:none|false|0)|(?:isAdmin|admin|root|privileged)\\b[^\\n]*(?:true|allow|bypass)|pull_request_target|permissions\\s*:\\s*write-all|(?:req(?:uest)?\\.|ctx\\.|params|query|body)[^\\n]{0,180}(?:\\.(?:query|execute|raw)|readFile|sendFile|createReadStream)\\s*\\(|(?:\\.innerHTML\\s*=|outerHTML\\s*=|document\\.write\\s*\\(|dangerouslySetInnerHTML|v-html\\s*=)|\\b(?:query|execute|raw|execSQL|createQuery)\\s*\\(|\\b(?:readFile|writeFile|createReadStream|createWriteStream|open|sendFile|download|unlink|rm|rmdir)\\s*\\(|\\b(?:fs|path)\\.(?:read|write|open|resolve|join|unlink|rm)|\\bopen\\s*\\(|\\b(?:md5|sha1)\\s*\\([^\\n]*(?:password|passwd|credential|token)|createHash\\s*\\(\\s*['\"](?:md5|sha1)['\"]|\\bECB\\b|DES/ECB|origin\\s*:\\s*['\"]\\*['\"][^\\n]{0,200}credentials\\s*:\\s*true|Access-Control-Allow-Origin[^\\n]*\\*|(?:\\x60[^\\x60]*\\$\\{|\\+\\s*(?:req|request|ctx|params|query|body|user|input))))",
 }
 const ignored = [
   '--glob', '!**/.git/**', '--glob', '!**/node_modules/**', '--glob', '!**/vendor/**',
   '--glob', '!**/dist/**', '--glob', '!**/build/**', '--glob', '!**/coverage/**',
   '--glob', '!**/*.min.js', '--glob', '!**/.env', '--glob', '!**/.env.*',
 ]
-const candidates = []
+const PER_KIND_LIMIT = 40
+const candidatesByKind = new Map()
 const seen = new Set()
 function add(candidate) {
-  if (candidates.length >= LIMIT || !candidate.file || !Number.isInteger(candidate.line)) return
+  if (!candidate.file || !Number.isInteger(candidate.line)) return
   const file = candidate.file.replace(/^\.\//, '').replace(/\\\\/g, '/')
-  if (file.startsWith('../') || file.startsWith('/') || seen.has(candidate.kind + ':' + file + ':' + candidate.line)) return
-  seen.add(candidate.kind + ':' + file + ':' + candidate.line)
-  candidates.push({ ...candidate, file, text: String(candidate.text ?? '').replace(/[\\r\\n]+/g, ' ').slice(0, 500) })
+  const key = candidate.kind + ':' + file + ':' + candidate.line
+  if (file.startsWith('../') || file.startsWith('/') || seen.has(key)) return
+  const bucket = candidatesByKind.get(candidate.kind) ?? []
+  if (bucket.length >= PER_KIND_LIMIT) return
+  seen.add(key)
+  bucket.push({ ...candidate, file, text: String(candidate.text ?? '').replace(/[\r\n]+/g, ' ').slice(0, 500) })
+  candidatesByKind.set(candidate.kind, bucket)
 }
 for (const [kind, pattern] of Object.entries(patterns)) {
   const run = spawnSync('rg', ['--json', '--hidden', '--no-ignore', '--max-count', '8', ...ignored, '-e', pattern, '.'], { encoding: 'utf8', maxBuffer: 8 * 1024 * 1024 })
-  for (const line of run.stdout.split('\\n')) {
+  for (const line of run.stdout.split('\n')) {
     try {
       const event = JSON.parse(line)
       if (event.type !== 'match') continue
@@ -98,6 +111,20 @@ try {
     })
   }
 } catch { /* Semgrep is advisory discovery, not a required scanner protocol. */ }
+// Round-robin selection preserves a useful lead from every category instead
+// of letting noisy early patterns consume the complete candidate budget.
+const candidates = []
+for (let index = 0; candidates.length < LIMIT; index += 1) {
+  let added = false
+  for (const bucket of candidatesByKind.values()) {
+    const candidate = bucket[index]
+    if (candidate && candidates.length < LIMIT) {
+      candidates.push(candidate)
+      added = true
+    }
+  }
+  if (!added) break
+}
 await writeFile('/tmp/checkv2-candidates.json', JSON.stringify(candidates), { mode: 0o600 })
 `
 
