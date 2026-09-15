@@ -124,7 +124,12 @@ function parseFinding(value) {
     if (!value || typeof value !== 'object' || Array.isArray(value))
         throw new Error('Invalid finding');
     const item = value;
-    if (item.kind !== 'suspicious_behavior' && item.kind !== 'security_issue')
+    // Accept the two equivalent camel-case spellings used by the older scanner
+    // protocol, but retain one canonical persisted schema.
+    const kind = item.kind === 'suspiciousBehavior' ? 'suspicious_behavior'
+        : item.kind === 'securityIssue' ? 'security_issue'
+            : item.kind;
+    if (kind !== 'suspicious_behavior' && kind !== 'security_issue')
         throw new Error('Invalid finding kind');
     if (!['low', 'medium', 'high', 'critical'].includes(String(item.severity)))
         throw new Error('Invalid severity');
@@ -133,7 +138,7 @@ function parseFinding(value) {
     if (!Array.isArray(item.evidence) || item.evidence.length === 0 || item.evidence.length > 10)
         throw new Error('A finding needs evidence');
     return {
-        kind: item.kind,
+        kind,
         title: text(item.title, 'finding title', 500),
         severity: item.severity,
         confidence: item.confidence,
