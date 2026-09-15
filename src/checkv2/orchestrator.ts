@@ -235,7 +235,17 @@ async function runAgent(
       CODEVET_AGENT_SYSTEM_PROMPT: systemPrompt,
     },
   })
-  if (result.exitCode !== 0) throw new Error('Repository agent failed')
+  if (result.exitCode !== 0) {
+    // Do not include stdout: it may contain model output derived from the
+    // untrusted checkout. Pi reports startup/provider failures on stderr.
+    const stderr = result.stderr.trim().slice(-4_000)
+    const status = [
+      `exit code ${result.exitCode ?? 'unknown'}`,
+      ...(result.timedOut ? ['timed out'] : []),
+      ...(result.truncated ? ['output truncated'] : []),
+    ].join(', ')
+    throw new Error(`Repository agent failed (${status})${stderr ? `: ${stderr}` : ''}`)
+  }
   return parseReport(sandbox, result.stdout)
 }
 
