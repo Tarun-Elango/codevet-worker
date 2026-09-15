@@ -7,6 +7,7 @@ import {
   parseScannerOutput,
   redactSensitiveText,
 } from '../dist/checks/analysis.js'
+import { scannerTemplate } from '../dist/checks/sandbox_step1.js'
 
 const b64 = (value) => Buffer.from(value).toString('base64')
 const candidate = (category, file, line, text) =>
@@ -25,6 +26,12 @@ const output = (lines) => [
   ...lines,
   'CODEVET_DISCOVERY_END',
 ].join('\n')
+
+test('keeps individual Railway template commands below the build command limit', () => {
+  const { instructions } = scannerTemplate.compile()
+  assert.ok(instructions.length >= 4)
+  assert.ok(instructions.every((instruction) => Buffer.byteLength(instruction) < 31 * 1024))
+})
 
 test('keeps context-dependent security patterns as leads', () => {
   const code = 'db.query(`SELECT * FROM users WHERE id = ${req.query.id}`)'

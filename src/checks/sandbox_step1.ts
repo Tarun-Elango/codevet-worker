@@ -83,11 +83,12 @@ export const scannerTemplate = Sandbox.template()
     test "$PI_AGENT_ACTUAL_INTEGRITY" = "${PI_AGENT_INTEGRITY}"
     npm install -g --ignore-scripts "$PI_AGENT_TARBALL"
     node -e 'const { readFileSync } = require("node:fs"); if (JSON.parse(readFileSync(process.argv[1])).version !== process.argv[2]) process.exit(1)' "$(npm root -g)/${PI_AGENT_PACKAGE}/package.json" "${PI_AGENT_VERSION}"
-    # Keep a root-owned absolute launcher. AI analysis intentionally uses
-    # env -i, so its minimal PATH must not determine where npm placed global
-    # executables (which differs between base images).
-    PI_BIN="$(command -v pi)"
-    test -x "$PI_BIN"
+  `)
+  // Keep each build instruction below the sandbox builder's command-size
+  // limit. This also makes a failed extension-write step distinguishable from
+  // package installation in Railway build logs.
+  .run(`
+    set -eux
 
     # Pi's built-in read-only tools resolve absolute paths too. The model is
     # untrusted, so enforce repository containment and resource budgets in
@@ -666,9 +667,15 @@ EOF
     chown root:root /opt/codevet/repository-scope.js
     chmod 0644 /opt/codevet/repository-scope.js
 
-    # Do not rely on the scanner process PATH to find npm's global bin.
-    # PI_BIN was resolved immediately after installing the pinned package,
-    # before any untrusted repository content is present.
+  `)
+  .run(`
+    set -eux
+
+    # Keep a root-owned absolute launcher. AI analysis intentionally uses
+    # env -i, so its minimal PATH must not determine where npm placed global
+    # executables (which differs between base images).
+    PI_BIN="$(command -v pi)"
+    test -x "$PI_BIN"
     cat > /opt/codevet/pi <<EOF
     #!/bin/sh
     exec "$PI_BIN" "\\$@"
