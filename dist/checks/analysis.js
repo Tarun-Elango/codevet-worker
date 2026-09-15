@@ -4,7 +4,7 @@ import { MAX_AGENT_ITEMS, MAX_AGENT_LLM_TURNS, MAX_AGENT_OUTPUT_BYTES, MAX_AGENT
 export const PI_AGENT_PACKAGE = '@earendil-works/pi-coding-agent';
 export const PI_AGENT_VERSION = '0.85.1';
 export const PI_AGENT_INTEGRITY = 'sha512-FGRN+OHbWaefBPGaTggAdLjrIHW+s2PzLyglz/5dfLzb9of7uuXMXYC0fJIeZTw+shS32o2cuQ9jF7YSDuL/oQ==';
-export const SCANNER_VERSION = `v25-investigate-verify-pi-${PI_AGENT_VERSION}`;
+export const SCANNER_VERSION = `v26-investigate-verify-pi-${PI_AGENT_VERSION}`;
 const LOW_CONFIDENCE_PATH_PATTERN = /(^|\/)(?:test|tests|__tests__|fixtures?|mocks?|docs?|examples?)\/|(?:^|\/)(?:README|CHANGELOG|LICENSE)(?:\.|$)|(?:_test\.go|\.(?:test|spec)\.[jt]sx?|\.md|\.lock|min\.js|\.map)$|(?:^|\/)node_modules\//i;
 const SOURCE_FILE_PATTERN = /\.(?:ts|tsx|js|jsx|mjs|cjs|py|go|rs|java|kt|kts|scala|sc|rb|php|ex|exs|erl|hrl|r|rmd|sol|move|c|h|cc|cpp|cxx|cs|swift|dart|lua|sh|bash|zsh|fish|ksh|dash|ps1|bat|cmd|html?|vue|svelte|ipynb)$/i;
 // Build, deployment, and package-manager configuration can execute commands
