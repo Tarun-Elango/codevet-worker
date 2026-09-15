@@ -59,9 +59,9 @@ flowchart TD
   R["Input: ScannerResult"] --> Q{"AI provider and model configured?"}
   Q -- No --> N["Output: ScannerResult\nagentAnalysis: null"]
   Q -- Yes --> B["Build bounded prompt and priority paths\nOutput: prompt + path list"]
-  B --> I["Pi investigator reads allowed repository files\nOutput: investigator AgentAnalysis draft"]
-  I --> V["Fresh Pi verifier independently reviews Step 1 leads + draft against source\nOutput: verified AgentAnalysis"]
-  V --> X["Validate report schema, citations, and size"]
+  B --> I["Pi investigator reads allowed repository files\nOutput: cited AgentAnalysis draft"]
+  I --> V["Fresh Pi verifier independently reviews Step 1 leads + draft against source\nOutput: cited, verified AgentAnalysis"]
+  V --> X["Trusted code validates, normalizes, and combines coverage"]
   X --> F["Output: ScannerResult\nagentAnalysis: final analysis"]
   N --> D["Destroy sandbox"]
   F --> D
@@ -72,13 +72,13 @@ flowchart TD
 | Point | What happens | Output / object |
 |---|---|---|
 | Configuration check | Determines whether the provider API key and explicit model are available. | Skip, or AI configuration |
-| Prompt build | Converts Step 1 metadata and ranked leads into a capped prompt. Sensitive-file findings are excluded. | Prompt text and prioritized file paths |
-| Investigator | Pi inspects allowed files with `read`, `grep`, `find`, and `ls`; it must submit a report through `codevet_report`. | Investigator `AgentAnalysis` draft |
-| Verifier | A new Pi session receives the bounded Step 1 prompt/leads and investigator draft. It independently reviews priority paths, entrypoints, auth/request handling, and the draft's claims against the checkout. | Verified `AgentAnalysis` |
-| Validation | Trusted code validates JSON shape, output size, repository paths, and cited line ranges. Invalid, timed-out, or failed AI work becomes a non-fatal result. | `AgentAnalysis` with `completed`, `failed`, or `timeout` status |
-| Final result | Adds the analysis to the deterministic Step 1 result. | `ScannerResult { ...step1, agentAnalysis }` |
+| Prompt build | Converts Step 1 metadata and ranked leads into a capped prompt. Sensitive-file findings and deterministic findings are excluded. | Prompt text and prioritized file paths |
+| Investigator | Pi inspects allowed files with `read`, `grep`, `find`, and `ls`; it must submit one report through `codevet_report`, with exact source evidence for every finding. | Investigator `AgentAnalysis` draft |
+| Verifier | A new Pi session receives the bounded Step 1 prompt/leads and investigator draft. Its preloaded-file priorities put investigator citations first, then Step 1 leads. It independently reviews priority paths, entrypoints, auth/request handling, and the draft's claims against the checkout. | Verified `AgentAnalysis` |
+| Validation | Trusted sandbox code checks report paths and line ranges against readable checkout files, injects redacted source excerpts for citations, and enforces report bounds. Host code validates JSON shape and output size, deduplicates findings, normalizes contradictory verdict/risk values, and combines trusted coverage from both passes. Invalid, timed-out, or failed AI work becomes a non-fatal result. | `AgentAnalysis` with `completed`, `failed`, or `timeout` status |
+| Final result | Adds the verified analysis to the deterministic Step 1 result. If the investigator does not complete, the verifier is not run. | `ScannerResult { ...step1, agentAnalysis }` |
 
-`agentAnalysis` contains a scoped verdict, risk, summary, trusted coverage, suspicious behaviors, high/critical security issues, external services, notes, and an optional error. It is `null` only when Step 2 was deliberately skipped; Step 1 evidence is still returned if AI analysis fails.
+`agentAnalysis` contains a scoped verdict, risk, summary, trusted coverage (the union of both passes), suspicious behaviors, high/critical security issues, external services, notes, and an optional error. Findings require exact, checkout-validated evidence ranges; their source excerpts are injected by trusted code. It is `null` only when Step 2 was deliberately skipped; Step 1 evidence is still returned if either AI pass fails.
 
 ## Step 1: Configurable Limits
 
@@ -103,7 +103,7 @@ Step 2 has configurable process limits plus fixed tool and model-inspection budg
 | Control | Default | Maximum | Effect |
 |---|---:|---:|---|
 | `CODEVET_AI_TIMEOUT_SEC` | 900 seconds | 1,200 seconds | Per-Pi-pass timeout |
-| `CODEVET_AI_MAX_OUTPUT_BYTES` | 256 KB | 256 KB | Combined process/report output cap |
+| `CODEVET_AI_MAX_OUTPUT_BYTES` | 256 KB | 256 KB | Per-pass process/report output cap |
 | Prompt | 64 KB | fixed | Limits Step 1 evidence sent to Pi |
 | Preloaded context | 8 files / 256 KB | fixed | Initial source context only |
 | File reads | 200 KB/file; 20 MB total | fixed | Limits model-visible repository content |
@@ -111,4 +111,4 @@ Step 2 has configurable process limits plus fixed tool and model-inspection budg
 | Directory listing | 250 results | fixed | Limits `find`/`ls` output |
 | Grep | 200 matches / 32 KB per call | fixed | Limits redacted search results |
 
-Pi may access only existing, non-sensitive files below `/workspace/repo`. It cannot use write or execution tools, read `.git` or conventional secret/key/certificate files, follow escaping symlinks, load extensions/skills/prompt templates, or run repository code.
+Pi may access only existing, non-sensitive, non-generated files below `/workspace/repo`. It cannot use write or execution tools, read `.git` or conventional secret/key/certificate files, follow escaping symlinks, load extensions/skills/prompt templates, or run repository code. Source returned by its tools and trusted citation excerpts is redacted before reaching the model/provider.
