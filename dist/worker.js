@@ -1,4 +1,4 @@
-import { runScannerContainer, SCANNER_VERSION } from './checkv2/orchestrator.js';
+import { runScannerContainer, SCANNER_VERSION } from './checks/orchestrator.js';
 function parseRepoUrl(repoUrl) {
     const url = new URL(repoUrl);
     if (url.protocol !== 'https:' || url.hostname !== 'github.com') {
@@ -32,23 +32,21 @@ export function validateRepoUrl(repoUrl) {
 function repoIdentifierFromUrl(repoUrl) {
     return repoUrl.pathname.replace(/^\//, '').replace(/\.git$/, '');
 }
-/** Provide a useful persisted summary for a CheckV2 result. */
+/** Provide a useful persisted summary when the optional AI summary is null. */
 function summaryForResult(result) {
-    const summary = result.summary.trim();
-    if (summary)
-        return summary;
-    return `Found ${result.findings.length} verified finding(s) from ${result.candidates.length} candidate(s).`;
-}
-function overallRiskForResult(result) {
-    // Candidate discovery alone is not evidence that the repository is safe.
-    if (!result.investigation || !result.verificationComplete)
-        return 'unknown';
-    if (result.findings.length === 0)
-        return 'none';
-    const severityRank = { low: 1, medium: 2, high: 3, critical: 4 };
-    return result.findings.reduce((risk, finding) => severityRank[finding.severity] > severityRank[risk]
-        ? finding.severity
-        : risk, 'low');
+    const agentSummary = result.agentAnalysis?.summary?.trim();
+    if (agentSummary)
+        return agentSummary;
+    const aiIssueCount = result.agentAnalysis?.securityIssues.length ?? 0;
+    const behaviorCount = result.agentAnalysis?.suspiciousBehaviors.length ?? 0;
+    const primaryFinding = result.agentAnalysis?.securityIssues[0]?.description ??
+        result.securityFindings[0]?.title ??
+        result.agentAnalysis?.suspiciousBehaviors[0]?.description;
+    const risk = result.agentAnalysis?.overallRisk ?? 'unknown';
+    return [
+        `Risk: ${risk}. Found ${result.securityFindings.length} deterministic finding(s), ${aiIssueCount} AI security issue(s), and ${behaviorCount} suspicious behavior(s).`,
+        ...(primaryFinding ? [`Primary finding: ${primaryFinding}`] : []),
+    ].join(' ');
 }
 // Resolve either GitHub's default branch or a ref selected in a /tree/ URL.
 /**
@@ -156,24 +154,33 @@ export async function processRequest(pool, channel, msg, job) {
             return;
         }
         /**
-         * STEP D — CheckV2 returns deterministic candidate anchors and, when
-         * configured, independently verified source-cited findings. The complete
-         * result is persisted because candidates and the investigator draft are
-         * useful context even though only verifier findings are final conclusions.
+         * STEP D — The sandbox returns structured inventory, candidates, static
+         * findings, correlations, and bounded snippets. No repository access is
+         * needed after this point.
          */
         const scannerResult = await runScannerContainer({
             ...job,
             repoUrl: validatedRepoUrl.toString(),
             commitSha,
         });
+        const deterministicIssues = scannerResult.securityFindings;
+        const aiIssues = scannerResult.agentAnalysis?.status === 'completed'
+            ? scannerResult.agentAnalysis.securityIssues
+            : [];
         console.log(`[${uid}] Analysis: ` +
-            `${scannerResult.findings.length} verified finding(s), ` +
-            `${scannerResult.candidates.length} candidate(s)`);
+            `${deterministicIssues.length} deterministic finding(s), ` +
+            `${aiIssues.length} AI security issue(s), ` +
+            `${scannerResult.candidateFlows.length} candidate flow(s)`);
         const storedFindings = {
-            candidates: scannerResult.candidates,
-            investigation: scannerResult.investigation,
-            verificationComplete: scannerResult.verificationComplete,
-            findings: scannerResult.findings,
+            deterministic: scannerResult.securityFindings,
+            aiSecurityIssues: scannerResult.agentAnalysis?.securityIssues ?? [],
+            suspiciousBehaviors: scannerResult.agentAnalysis?.suspiciousBehaviors ?? [],
+            externalServices: scannerResult.agentAnalysis?.externalServices ?? [],
+            // Preserve the scoped AI verdict and trusted coverage alongside the
+            // existing arrays so clients do not mistake a risk of "none" for a
+            // repository-wide safety guarantee.
+            agentAnalysis: scannerResult.agentAnalysis,
+            candidateFlows: scannerResult.candidateFlows,
         };
         await lockClient.query(`
         INSERT INTO repo_results (
@@ -205,7 +212,7 @@ export async function processRequest(pool, channel, msg, job) {
             summaryForResult(scannerResult),
             JSON.stringify(storedFindings),
             SCANNER_VERSION,
-            overallRiskForResult(scannerResult),
+            scannerResult.agentAnalysis?.overallRisk ?? 'unknown',
         ]);
         console.log(`[${uid}] Stored analysis`);
         await pool.query(`
