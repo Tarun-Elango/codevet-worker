@@ -1,8 +1,8 @@
 import type { Channel, ConsumeMessage } from 'amqplib'
 import type { Pool, PoolClient } from 'pg'
 
-import { runScannerContainer, SCANNER_VERSION } from './checks/orchestrator.js'
-import type { ScannerResult } from './checks/analysis.js'
+import { runScannerContainer, SCANNER_VERSION } from './checkv2/orchestrator.js'
+import type { CheckV2Result } from './checkv2/types.js'
 
 /**
  * STEP A — The queue message is the only input crossing into the trusted
@@ -64,23 +64,29 @@ function repoIdentifierFromUrl(repoUrl: URL): string {
   return repoUrl.pathname.replace(/^\//, '').replace(/\.git$/, '')
 }
 
-/** Provide a useful persisted summary when the optional AI summary is null. */
-function summaryForResult(result: ScannerResult): string {
-  const agentSummary = result.agentAnalysis?.summary?.trim()
-  if (agentSummary) return agentSummary
+/** Provide a useful persisted summary for a CheckV2 result. */
+function summaryForResult(result: CheckV2Result): string {
+  const summary = result.summary.trim()
+  if (summary) return summary
 
-  const aiIssueCount = result.agentAnalysis?.securityIssues.length ?? 0
-  const behaviorCount = result.agentAnalysis?.suspiciousBehaviors.length ?? 0
-  const primaryFinding =
-    result.agentAnalysis?.securityIssues[0]?.description ??
-    result.securityFindings[0]?.title ??
-    result.agentAnalysis?.suspiciousBehaviors[0]?.description
-  const risk = result.agentAnalysis?.overallRisk ?? 'unknown'
+  return `Found ${result.findings.length} verified finding(s) from ${result.candidates.length} candidate(s).`
+}
 
-  return [
-    `Risk: ${risk}. Found ${result.securityFindings.length} deterministic finding(s), ${aiIssueCount} AI security issue(s), and ${behaviorCount} suspicious behavior(s).`,
-    ...(primaryFinding ? [`Primary finding: ${primaryFinding}`] : []),
-  ].join(' ')
+function overallRiskForResult(
+  result: CheckV2Result
+): 'none' | 'low' | 'medium' | 'high' | 'critical' | 'unknown' {
+  // Candidate discovery alone is not evidence that the repository is safe.
+  if (!result.investigation) return 'unknown'
+  if (result.findings.length === 0) return 'none'
+
+  const severityRank = { low: 1, medium: 2, high: 3, critical: 4 } as const
+  return result.findings.reduce(
+    (risk, finding) =>
+      severityRank[finding.severity] > severityRank[risk]
+        ? finding.severity
+        : risk,
+    'low' as keyof typeof severityRank
+  )
 }
 
 // Resolve either GitHub's default branch or a ref selected in a /tree/ URL.
@@ -243,9 +249,10 @@ export async function processRequest(
     }
 
     /**
-     * STEP D — The sandbox returns structured inventory, candidates, static
-     * findings, correlations, and bounded snippets. No repository access is
-     * needed after this point.
+     * STEP D — CheckV2 returns deterministic candidate anchors and, when
+     * configured, independently verified source-cited findings. The complete
+     * result is persisted because candidates and the investigator draft are
+     * useful context even though only verifier findings are final conclusions.
      */
     const scannerResult = await runScannerContainer({
       ...job,
@@ -253,30 +260,16 @@ export async function processRequest(
       commitSha,
     })
 
-    const deterministicIssues = scannerResult.securityFindings
-    const aiIssues =
-      scannerResult.agentAnalysis?.status === 'completed'
-        ? scannerResult.agentAnalysis.securityIssues
-        : []
-
     console.log(
       `[${uid}] Analysis: ` +
-      `${deterministicIssues.length} deterministic finding(s), ` +
-      `${aiIssues.length} AI security issue(s), ` +
-      `${scannerResult.candidateFlows.length} candidate flow(s)`
+      `${scannerResult.findings.length} verified finding(s), ` +
+      `${scannerResult.candidates.length} candidate(s)`
     )
 
     const storedFindings = {
-      deterministic: scannerResult.securityFindings,
-      aiSecurityIssues: scannerResult.agentAnalysis?.securityIssues ?? [],
-      suspiciousBehaviors:
-        scannerResult.agentAnalysis?.suspiciousBehaviors ?? [],
-      externalServices: scannerResult.agentAnalysis?.externalServices ?? [],
-      // Preserve the scoped AI verdict and trusted coverage alongside the
-      // existing arrays so clients do not mistake a risk of "none" for a
-      // repository-wide safety guarantee.
-      agentAnalysis: scannerResult.agentAnalysis,
-      candidateFlows: scannerResult.candidateFlows,
+      candidates: scannerResult.candidates,
+      investigation: scannerResult.investigation,
+      findings: scannerResult.findings,
     }
 
     await lockClient.query(
@@ -311,7 +304,7 @@ export async function processRequest(
         summaryForResult(scannerResult),
         JSON.stringify(storedFindings),
         SCANNER_VERSION,
-        scannerResult.agentAnalysis?.overallRisk ?? 'unknown',
+        overallRiskForResult(scannerResult),
       ]
     )
 
