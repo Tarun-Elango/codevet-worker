@@ -198,7 +198,17 @@ async function runAgent(sandbox, agent, systemPrompt, request) {
       ${agent.piKeyEnv}="$CODEVET_AGENT_API_KEY" \\
       bash --noprofile --norc -c '
         cd /workspace/repo
-        exec pi --print --no-session --provider "$CODEVET_AI_PROVIDER" --model "$CODEVET_AI_MODEL" --api-key "$CODEVET_AGENT_API_KEY" \\
+        # Use the template's absolute launcher. The fallback supports template
+        # images created before that launcher was added.
+        PI_COMMAND=/opt/checkv2/pi
+        if [ ! -x "$PI_COMMAND" ]; then
+          PI_COMMAND="$(npm prefix -g)/bin/pi"
+        fi
+        if [ ! -x "$PI_COMMAND" ]; then
+          echo "Pi executable is unavailable" >&2
+          exit 127
+        fi
+        exec "$PI_COMMAND" --print --no-session --provider "$CODEVET_AI_PROVIDER" --model "$CODEVET_AI_MODEL" --api-key "$CODEVET_AGENT_API_KEY" \\
           --tools read,grep,find,ls --no-context-files --no-extensions -e /opt/checkv2/repository-tools.js \\
           --no-skills --no-prompt-templates --no-approve --system-prompt "$CODEVET_AGENT_SYSTEM_PROMPT" \\
           -p "Analyze the repository using the JSON data supplied on stdin."

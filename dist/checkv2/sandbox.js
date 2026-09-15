@@ -136,6 +136,17 @@ export const checkV2Template = Sandbox.template()
     python3 -m pip install --no-cache-dir --break-system-packages semgrep
   `)
     .run(`
+    # npm's global bin directory varies by base image. Preserve the resolved
+    # executable behind an absolute launcher because agent processes use env -i.
+    PI_BIN="$(command -v pi)"
+    test -x "$PI_BIN"
+    cat > /opt/checkv2/pi <<EOF
+#!/bin/sh
+exec "$PI_BIN" "\\$@"
+EOF
+    chown root:root /opt/checkv2/pi
+    chmod 0755 /opt/checkv2/pi
+
     cat > /opt/checkv2/repository-tools.js <<'EOF'
 ${REPOSITORY_TOOLS_EXTENSION}
 EOF
