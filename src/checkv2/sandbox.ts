@@ -91,7 +91,8 @@ function add(candidate) {
 }
 for (const [kind, pattern] of Object.entries(patterns)) {
   const run = spawnSync('rg', ['--json', '--hidden', '--no-ignore', '--max-count', '8', ...ignored, '-e', pattern, '.'], { encoding: 'utf8', maxBuffer: 8 * 1024 * 1024 })
-  for (const line of run.stdout.split('\n')) {
+  const output = typeof run.stdout === 'string' ? run.stdout : ''
+  for (const line of output.split('\n')) {
     try {
       const event = JSON.parse(line)
       if (event.type !== 'match') continue
@@ -153,10 +154,14 @@ export type CheckV2Sandbox = Awaited<ReturnType<typeof Sandbox.create>>
 export async function discoverCandidates(sandbox: CheckV2Sandbox): Promise<Candidate[]> {
   await sandbox.files.write('/tmp/checkv2-discover.mjs', discoveryScript)
   const result = await sandbox.exec(
-    'chown scanner:scanner /tmp/checkv2-discover.mjs && runuser -u scanner -- env -i PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin HOME=/home/scanner node /tmp/checkv2-discover.mjs'
+    'chown scanner:scanner /tmp/checkv2-discover.mjs && runuser -u scanner -- env -i PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin HOME=/home/scanner bash --noprofile --norc -c "cd /workspace/repo && exec node /tmp/checkv2-discover.mjs"'
   )
   if (result.exitCode !== 0) {
-    throw new Error('Ripgrep/Semgrep candidate discovery failed')
+    const details = [result.stdout, result.stderr]
+      .filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
+      .join('\n')
+      .slice(-4_000)
+    throw new Error(`Ripgrep/Semgrep candidate discovery failed${details ? `: ${details}` : ''}`)
   }
   const raw: unknown = JSON.parse(await sandbox.files.read('/tmp/checkv2-candidates.json'))
   if (!Array.isArray(raw)) throw new Error('Invalid candidate discovery output')
