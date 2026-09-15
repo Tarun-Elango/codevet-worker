@@ -151,6 +151,15 @@ export type ContextSnippet = {
   code: string
 }
 
+export type AgentEvidence = {
+  file: string
+  startLine: number
+  endLine: number
+  /** Source excerpt injected by trusted sandbox code, never authored by the model. */
+  code: string
+  explanation: string
+}
+
 export type AgentAnalysis = {
   status: 'completed' | 'failed' | 'timeout'
   /** A scoped conclusion, not a claim that the entire repository is safe. */
@@ -178,18 +187,20 @@ export type AgentAnalysis = {
     expectedForApplication?: boolean
     whySuspicious: string
     file: string
-    line?: number
+    line: number
     relatedFiles?: string[]
+    evidence: AgentEvidence[]
     confidence: number
   }>
   securityIssues: Array<{
     category: string
     file: string
-    line?: number
+    line: number
     description: string
     severity: 'high' | 'critical'
     confidence: number
     relatedFiles?: string[]
+    evidence: AgentEvidence[]
   }>
   externalServices: Array<{
     host?: string
@@ -243,7 +254,7 @@ type Manifest = {
 export const PI_AGENT_PACKAGE = '@earendil-works/pi-coding-agent'
 export const PI_AGENT_VERSION = '0.85.1'
 export const PI_AGENT_INTEGRITY = 'sha512-FGRN+OHbWaefBPGaTggAdLjrIHW+s2PzLyglz/5dfLzb9of7uuXMXYC0fJIeZTw+shS32o2cuQ9jF7YSDuL/oQ=='
-export const SCANNER_VERSION = `v24-discovery-pi-${PI_AGENT_VERSION}`
+export const SCANNER_VERSION = `v25-investigate-verify-pi-${PI_AGENT_VERSION}`
 
 const LOW_CONFIDENCE_PATH_PATTERN =
   /(^|\/)(?:test|tests|__tests__|fixtures?|mocks?|docs?|examples?)\/|(?:^|\/)(?:README|CHANGELOG|LICENSE)(?:\.|$)|(?:_test\.go|\.(?:test|spec)\.[jt]sx?|\.md|\.lock|min\.js|\.map)$|(?:^|\/)node_modules\//i
@@ -392,14 +403,17 @@ export function configuredAgent(): { provider: string; model: string; apiKey: st
   // to Pi's provider-specific environment variable only in the agent process.
   const apiKey = process.env.CODEVET_AI_API_KEY ?? (piKeyEnv ? process.env[piKeyEnv] : undefined)
   if (!piKeyEnv || !apiKey) return null
-  return { provider, model: process.env.CODEVET_AI_MODEL ?? '', apiKey, piKeyEnv }
+  // Require an explicit deployment pin; never inherit Pi/provider defaults.
+  const model = process.env.CODEVET_AI_MODEL?.trim()
+  if (!model) return null
+  return { provider, model, apiKey, piKeyEnv }
 }
 
 export function coverageForAgent(repositoryFiles: number, inspectedFiles: string[] = []): AgentAnalysis['coverage'] {
   const uninspectedFiles = Math.max(0, repositoryFiles - inspectedFiles.length)
   const limitations = [
-    `AI analysis is limited to ${MAX_AGENT_READ_BYTES / 1024} KB of model-visible repository content and ${MAX_AGENT_TOOL_CALLS} inspection tool calls. Finalization is requested after ${MAX_AGENT_LLM_TURNS} model turns.`,
-    'Coverage is recorded by the trusted scanner; the model does not self-report inspected files.',
+    `Each AI pass is limited to ${MAX_AGENT_READ_BYTES / 1024} KB of model-visible repository content and ${MAX_AGENT_TOOL_CALLS} inspection tool calls. Finalization is requested after ${MAX_AGENT_LLM_TURNS} model turns per pass.`,
+    'Coverage is recorded by the trusted scanner across both AI passes; the model does not self-report inspected files.',
   ]
   if (repositoryFiles > MAX_INVENTORY_FILES) {
     limitations.push(
@@ -649,7 +663,8 @@ function boundedConfidence(value: unknown): number | undefined {
 /** Strictly validate and bound all model-originated fields before persistence. */
 export function parseAgentOutput(
   stdout: string,
-  coverage: AgentAnalysis['coverage'] = coverageForAgent(0)
+  coverage: AgentAnalysis['coverage'] = coverageForAgent(0),
+  trustedFiles?: ReadonlyMap<string, number> | ReadonlySet<string>
 ): AgentAnalysis {
   if (Buffer.byteLength(stdout) > MAX_AGENT_OUTPUT_BYTES) throw new Error('agent output too large')
   const start = stdout.indexOf('{')
@@ -664,21 +679,50 @@ export function parseAgentOutput(
   const summary = value.summary === null ? null : boundedString(value.summary)
   const notes = boundedStringArray(value.notes)
   if (summary === undefined || !notes) throw new Error('invalid summary or notes')
+  const trustedPath = (fileValue: unknown): string => {
+    const file = boundedString(fileValue, 1_000)
+    if (!file || file !== normalizePath(file) || file.startsWith('/') || file.split('/').some((part) => part === '..' || part === '.') || /[\x00-\x1f\x7f]/.test(file)) throw new Error('invalid agent source location')
+    if (trustedFiles && !trustedFiles.has(file)) throw new Error('agent source path was not verified')
+    return file
+  }
+  const trustedLocation = (fileValue: unknown, lineValue: unknown): { file: string; line: number } => {
+    const file = trustedPath(fileValue)
+    const line = boundedLine(lineValue)
+    if (!line) throw new Error('invalid agent source location')
+    if (trustedFiles instanceof Map && line > (trustedFiles.get(file) ?? 0)) throw new Error('agent source line was not verified')
+    return { file, line }
+  }
+  const evidenceList = (input: unknown): AgentEvidence[] => {
+    if (!Array.isArray(input) || input.length === 0 || input.length > 10) throw new Error('invalid evidence list')
+    return input.map((item) => {
+      if (!item || typeof item !== 'object' || Array.isArray(item)) throw new Error('invalid evidence item')
+      const x = item as Record<string, unknown>
+      if (Object.keys(x).some((key) => !['file', 'startLine', 'endLine', 'code', 'explanation'].includes(key))) throw new Error('unknown evidence fields')
+      const start = trustedLocation(x.file, x.startLine)
+      const endLine = boundedLine(x.endLine)
+      const code = boundedString(x.code)
+      const explanation = boundedString(x.explanation)
+      if (!endLine || endLine < start.line || endLine - start.line > 40 || code === undefined || !explanation) throw new Error('invalid evidence range')
+      if (trustedFiles instanceof Map && endLine > (trustedFiles.get(start.file) ?? 0)) throw new Error('agent evidence line was not verified')
+      return { file: start.file, startLine: start.line, endLine, code, explanation }
+    })
+  }
   const list = (input: unknown, issue: boolean) => {
     if (!Array.isArray(input) || input.length > MAX_AGENT_ITEMS) throw new Error('invalid agent list')
     return input.map((item) => {
       if (!item || typeof item !== 'object' || Array.isArray(item)) throw new Error('invalid agent item')
       const x = item as Record<string, unknown>
-      const category = boundedString(x.category, 200), file = boundedString(x.file, 1_000), description = boundedString(x.description), confidence = boundedConfidence(x.confidence)
-      if (!category || !file || !description || confidence === undefined) throw new Error('invalid agent finding')
-      const line = x.line == null ? undefined : boundedLine(x.line)
-      if (x.line != null && !line) throw new Error('invalid line')
-      const relatedFiles = x.relatedFiles == null ? undefined : boundedStringArray(x.relatedFiles, MAX_AGENT_ITEMS)
-      if (x.relatedFiles != null && !relatedFiles) throw new Error('invalid related files')
+      const category = boundedString(x.category, 200), description = boundedString(x.description), confidence = boundedConfidence(x.confidence)
+      const location = trustedLocation(x.file, x.line)
+      const evidence = evidenceList(x.evidence)
+      if (!category || !description || confidence === undefined) throw new Error('invalid agent finding')
+      const rawRelatedFiles = x.relatedFiles == null ? undefined : boundedStringArray(x.relatedFiles, MAX_AGENT_ITEMS)
+      if (x.relatedFiles != null && !rawRelatedFiles) throw new Error('invalid related files')
+      const relatedFiles = rawRelatedFiles?.map(trustedPath)
       if (issue) {
         const severity = x.severity
         if (!['high', 'critical'].includes(String(severity))) throw new Error('security issue must be high or critical')
-        return { category, file, ...(line ? { line } : {}), description, severity: severity as 'high' | 'critical', confidence, ...(relatedFiles ? { relatedFiles } : {}) }
+        return { category, ...location, description, severity: severity as 'high' | 'critical', confidence, ...(relatedFiles ? { relatedFiles } : {}), evidence }
       }
       const capability = boundedString(x.capability)
       const whySuspicious = boundedString(x.whySuspicious)
@@ -696,9 +740,9 @@ export function parseAgentOutput(
         ...(leavesDevice !== undefined ? { leavesDevice } : {}),
         ...(expectedForApplication !== undefined ? { expectedForApplication } : {}),
         whySuspicious,
-        file,
-        ...(line ? { line } : {}),
+        ...location,
         ...(relatedFiles ? { relatedFiles } : {}),
+        evidence,
         confidence,
       }
     })
@@ -710,9 +754,10 @@ export function parseAgentOutput(
     if (!item || typeof item !== 'object' || Array.isArray(item)) throw new Error('invalid service')
     const x = item as Record<string, unknown>
     const optional = (key: string, max?: number) => x[key] == null ? undefined : boundedString(x[key], max)
-    const host = optional('host', 500), purpose = optional('purpose'), file = optional('file', 1_000), line = x.line == null ? undefined : boundedLine(x.line), dataSent = x.dataSent == null ? undefined : boundedStringArray(x.dataSent)
-    if ((x.host != null && !host) || (x.purpose != null && !purpose) || (x.file != null && !file) || (x.line != null && !line) || (x.dataSent != null && !dataSent)) throw new Error('invalid service fields')
-    return { ...(host ? { host } : {}), ...(purpose ? { purpose } : {}), ...(file ? { file } : {}), ...(line ? { line } : {}), ...(dataSent ? { dataSent } : {}) }
+    const host = optional('host', 500), purpose = optional('purpose'), dataSent = x.dataSent == null ? undefined : boundedStringArray(x.dataSent)
+    if ((x.host != null && !host) || (x.purpose != null && !purpose) || (x.dataSent != null && !dataSent) || ((x.file == null) !== (x.line == null))) throw new Error('invalid service fields')
+    const location = x.file == null ? undefined : trustedLocation(x.file, x.line)
+    return { ...(host ? { host } : {}), ...(purpose ? { purpose } : {}), ...(location ?? {}), ...(dataSent ? { dataSent } : {}) }
   })
   let repositoryContext: AgentAnalysis['repositoryContext']
   if (value.repositoryContext != null) {
@@ -785,11 +830,13 @@ export function redactSensitiveText(value: string): string {
       '$1[REDACTED: CONNECTION_CREDENTIAL]@'
     )
     .replace(
-      /(\b([A-Za-z0-9_.-]*(?:password|passwd|pwd|credential|token|api[_-]?key|apikey|secret|private[_-]?key|access[_-]?key|client[_-]?secret)[A-Za-z0-9_.-]*)\s*[:=]\s*)(?!(?:["'\x60])?\[REDACTED:)(?:(["'\x60])(?:\\.|[\s\S])*?\3|([^\s,;}\]]+))/gi,
-      (_match, prefix: string, key: string, quote?: string) =>
-        quote
-          ? `${prefix}${quote}[REDACTED: ${secretLabel(key)}]${quote}`
-          : `${prefix}[REDACTED: ${secretLabel(key)}]`
+      /(\b([A-Za-z0-9_.-]*(?:password|passwd|pwd|credential|token|api[_-]?key|apikey|secret|private[_-]?key|access[_-]?key|client[_-]?secret)[A-Za-z0-9_.-]*)\s*[:=]\s*)(["'\x60])([^\r\n"'\x60]{8,})\3/gi,
+      (match, prefix: string, key: string, quote: string, literal: string) => {
+        // Preserve dynamic values so security-relevant source-to-sink flow is
+        // not erased merely because a variable is named token/password.
+        if (literal.includes('${') || /^(?:true|false|null|undefined|process\.|req(?:uest)?\.|ctx\.|params\b|query\b|body\b|\[REDACTED:)/i.test(literal.trim())) return match
+        return `${prefix}${quote}[REDACTED: ${secretLabel(key)}]${quote}`
+      }
     )
     .replace(
       /([?&](?:password|passwd|pwd|credential|token|api[_-]?key|apikey|secret|access[_-]?key)=)[^&\s]+/gi,

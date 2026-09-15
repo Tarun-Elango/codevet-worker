@@ -1,10 +1,11 @@
 import { buildAgentFilePriorities, buildAgentPrompt, coverageForAgent, emptyAgentAnalysis, parseAgentOutput, redactSensitiveText, } from './analysis.js';
-import { AGENT_SYSTEM_PROMPT, AGENT_TIMEOUT_SEC, MAX_AGENT_OUTPUT_BYTES, MIN_FILES_TO_INSPECT, } from './limits.js';
-/** Step 2 — AI enrichment of the already-parsed deterministic Step 1 result. */
-export async function runSandboxStep2(sandbox, uid, scannerResult, agent) {
-    console.log(`[${uid}] Starting AI analysis`);
+import { AGENT_SYSTEM_PROMPT, VERIFIER_SYSTEM_PROMPT, AGENT_TIMEOUT_SEC, MAX_AGENT_OUTPUT_BYTES, MIN_FILES_TO_INSPECT, } from './limits.js';
+/** Run one isolated Pi role. The investigator and verifier never share a Pi
+ * session; the verifier receives only the bounded draft and repository tools. */
+async function runAgentPass(sandbox, uid, scannerResult, agent, prompt, systemPrompt, role) {
+    console.log(`[${uid}] Starting AI ${role} pass`);
     try {
-        await sandbox.files.write('/tmp/codevet-agent-prompt', buildAgentPrompt(scannerResult));
+        await sandbox.files.write('/tmp/codevet-agent-prompt', prompt);
         await sandbox.files.write('/tmp/codevet-agent-paths.json', JSON.stringify(buildAgentFilePriorities(scannerResult)));
         const command = `
       # The prompt is root-readable only. Pipe it into Pi before dropping
@@ -38,10 +39,8 @@ export async function runSandboxStep2(sandbox, uid, scannerResult, agent) {
             echo "Pi executable is unavailable" >&2
             exit 127
           fi
-          if [ -n "$CODEVET_AI_MODEL" ]; then
-            exec "$PI_COMMAND" --print --no-session --offline --provider "$CODEVET_AI_PROVIDER" --model "$CODEVET_AI_MODEL" --api-key "$CODEVET_AGENT_API_KEY" --tools read,grep,find,ls,codevet_report --no-context-files --no-extensions -e /opt/codevet/repository-scope.js --no-skills --no-prompt-templates --no-approve --system-prompt "$CODEVET_AGENT_SYSTEM_PROMPT" -p "Perform the requested repository analysis."
-          fi
-          exec "$PI_COMMAND" --print --no-session --offline --provider "$CODEVET_AI_PROVIDER" --api-key "$CODEVET_AGENT_API_KEY" --tools read,grep,find,ls,codevet_report --no-context-files --no-extensions -e /opt/codevet/repository-scope.js --no-skills --no-prompt-templates --no-approve --system-prompt "$CODEVET_AGENT_SYSTEM_PROMPT" -p "Perform the requested repository analysis."
+          test -n "$CODEVET_AI_MODEL"
+          exec "$PI_COMMAND" --print --no-session --offline --provider "$CODEVET_AI_PROVIDER" --model "$CODEVET_AI_MODEL" --api-key "$CODEVET_AGENT_API_KEY" --tools read,grep,find,ls,codevet_report --no-context-files --no-extensions -e /opt/codevet/repository-scope.js --no-skills --no-prompt-templates --no-approve --system-prompt "$CODEVET_AGENT_SYSTEM_PROMPT" -p "Perform the requested repository analysis."
         '
     `;
         // Stop streaming as soon as the model exceeds its response budget; do not
@@ -57,7 +56,7 @@ export async function runSandboxStep2(sandbox, uid, scannerResult, agent) {
                 CODEVET_AGENT_API_KEY: agent.apiKey,
                 CODEVET_AI_PROVIDER: agent.provider,
                 CODEVET_AI_MODEL: agent.model,
-                CODEVET_AGENT_SYSTEM_PROMPT: AGENT_SYSTEM_PROMPT,
+                CODEVET_AGENT_SYSTEM_PROMPT: systemPrompt,
             },
             timeoutSec: AGENT_TIMEOUT_SEC,
             onStdout(chunk) {
@@ -153,7 +152,29 @@ export async function runSandboxStep2(sandbox, uid, scannerResult, agent) {
     }
     catch {
         // Do not expose provider errors, stderr, prompts, or raw model output.
-        console.log(`[${uid}] AI analysis failed`);
+        console.log(`[${uid}] AI ${role} pass failed`);
         return emptyAgentAnalysis('failed', scannerResult.inventory.fileCount, 'Agent analysis failed');
     }
+}
+/** Step 2 — separate discovery from adjudication. A verifier gets a fresh
+ * context and must independently check the investigator's cited source. */
+export async function runSandboxStep2(sandbox, uid, scannerResult, agent) {
+    const investigation = await runAgentPass(sandbox, uid, scannerResult, agent, buildAgentPrompt(scannerResult), AGENT_SYSTEM_PROMPT, 'investigator');
+    if (investigation.status !== 'completed')
+        return investigation;
+    const verifierPrompt = 'Verify and correct this untrusted investigator draft against /workspace/repo. ' +
+        'Do not trust its claims or citations. Return the final CodeVet report.\n<CODEVET_INVESTIGATOR_DRAFT>\n' +
+        JSON.stringify(investigation) + '\n</CODEVET_INVESTIGATOR_DRAFT>';
+    if (Buffer.byteLength(verifierPrompt) > MAX_AGENT_OUTPUT_BYTES) {
+        return emptyAgentAnalysis('failed', scannerResult.inventory.fileCount, 'Investigator draft exceeded verifier input budget');
+    }
+    const verification = await runAgentPass(sandbox, uid, scannerResult, agent, verifierPrompt, VERIFIER_SYSTEM_PROMPT, 'verifier');
+    const inspectedFiles = [...new Set([
+            ...investigation.coverage.inspectedFiles,
+            ...verification.coverage.inspectedFiles,
+        ])];
+    return {
+        ...verification,
+        coverage: coverageForAgent(scannerResult.inventory.fileCount, inspectedFiles),
+    };
 }

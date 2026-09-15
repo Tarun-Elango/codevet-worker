@@ -1,7 +1,12 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { parseScannerOutput } from '../dist/checks/analysis.js'
+import {
+  coverageForAgent,
+  parseAgentOutput,
+  parseScannerOutput,
+  redactSensitiveText,
+} from '../dist/checks/analysis.js'
 
 const b64 = (value) => Buffer.from(value).toString('base64')
 const candidate = (category, file, line, text) =>
@@ -39,6 +44,36 @@ test('keeps suspicious supply-chain patterns as leads for AI validation', () => 
   ]))
   assert.equal(result.securityFindings.length, 0)
   assert.ok(result.candidates.some((lead) => lead.category === 'supply_chain'))
+})
+
+test('does not redact credential data-flow expressions or multiline source', () => {
+  const source = [
+    'const token = request.body.token',
+    'fetch(url, { body: token })',
+    'const password = "hardcoded-password-value"',
+  ].join('\n')
+  const redacted = redactSensitiveText(source)
+  assert.match(redacted, /token = request\.body\.token/)
+  assert.match(redacted, /fetch\(url/)
+  assert.doesNotMatch(redacted, /hardcoded-password-value/)
+})
+
+test('accepts evidence excerpts with trusted paths and line ranges', () => {
+  const report = {
+    status: 'completed', verdict: 'concerns_found', summary: 'Verified behavior', overallRisk: 'high',
+    suspiciousBehaviors: [{
+      category: 'egress', description: 'Sends input', capability: 'network request',
+      whySuspicious: 'Unexpected destination', file: 'src/input.ts', line: 2, confidence: 0.9,
+      evidence: [{ file: 'src/input.ts', startLine: 2, endLine: 3, code: 'fetch(url)', explanation: 'Performs the request' }],
+    }],
+    securityIssues: [], externalServices: [], notes: [],
+  }
+  const parsed = parseAgentOutput(JSON.stringify(report), coverageForAgent(3), new Map([['src/input.ts', 10]]))
+  assert.equal(parsed.suspiciousBehaviors[0].evidence[0].code, 'fetch(url)')
+  assert.throws(
+    () => parseAgentOutput(JSON.stringify({ ...report, suspiciousBehaviors: [{ ...report.suspiciousBehaviors[0], file: '../escape.ts' }] }), coverageForAgent(3), new Map([['src/input.ts', 10]])),
+    /source location/
+  )
 })
 
 test('correlates sensitive sources and network sinks across direct imports', () => {

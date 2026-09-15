@@ -111,7 +111,7 @@ export const scannerTemplate = Sandbox.template()
     // be exposed to the model/provider. Deterministic scanning handles them
     // locally and emits metadata only. Match path segments, not merely the
     // requested spelling, after canonicalization.
-    const SENSITIVE_REPOSITORY_PATH = /(?:^|\\/)\\.env(?:\\.|$)|(?:^|\\/)(?:secrets?|credentials?|auth[_-]?credentials?|keystore|truststore)(?:\\/|$|\\.(?:ya?ml|json|ini|conf|config|toml|xml|properties|txt))|(?:^|\\/)id_(?:rsa|dsa|ecdsa|ed25519)(?:\\.pub)?$|\\.(?:pem|key|p8|p12|pfx|jks|keystore|crt|cer|der|p7b|p7c)$/i
+    const SENSITIVE_REPOSITORY_PATH = /(?:^|\\/)\\.env(?:\\.|$)|(?:^|\\/)(?:secrets?|credentials?|auth[_-]?credentials?|keystore|truststore)\\.(?:ya?ml|json|ini|conf|config|toml|xml|properties|txt)$|(?:^|\\/)id_(?:rsa|dsa|ecdsa|ed25519)$|\\.(?:pem|key|p8|p12|pfx|jks|keystore|crt|cer|der|p7b|p7c)$/i
     const GENERATED_DIRECTORY = new Set(["node_modules", "vendor", "dist", "build", "target", "coverage", ".next", ".nuxt", "out", "bin", "obj", ".cache", "__pycache__", ".venv", "venv", "generated"])
     const MAX_LLM_TURNS = ${MAX_AGENT_LLM_TURNS}
     const MAX_TOOL_CALLS = ${MAX_AGENT_TOOL_CALLS}
@@ -145,7 +145,7 @@ export const scannerTemplate = Sandbox.template()
         .replace(/\\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|glpat-[A-Za-z0-9_-]{20,}|xox[baprs]-[A-Za-z0-9-]{10,}|AIza[A-Za-z0-9_-]{20,})\\b/g, "[REDACTED: SERVICE_TOKEN]")
         .replace(/\\beyJ[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+\\b/g, "[REDACTED: JWT]")
         .replace(/([a-z][a-z0-9+.-]*:\\/\\/[^\\s\\/:@]+:)[^\\s@\\/]+@/gi, "$1[REDACTED: CONNECTION_CREDENTIAL]@")
-        .replace(/(\\b([A-Za-z0-9_.-]*(?:password|passwd|pwd|credential|token|api[_-]?key|apikey|secret|private[_-]?key|access[_-]?key|client[_-]?secret)[A-Za-z0-9_.-]*)\\s*[:=]\\s*)(?!(?:["'\\x60])?\\[REDACTED:)(?:(["'\\x60])(?:\\\\.|[\\s\\S])*?\\3|([^\\s,;}\\]]+))/gi, (_match, prefix, key, quote) => quote ? prefix + quote + "[REDACTED: " + secretLabel(key) + "]" + quote : prefix + "[REDACTED: " + secretLabel(key) + "]")
+        .replace(/(\\b([A-Za-z0-9_.-]*(?:password|passwd|pwd|credential|token|api[_-]?key|apikey|secret|private[_-]?key|access[_-]?key|client[_-]?secret)[A-Za-z0-9_.-]*)\\s*[:=]\\s*)(["'\\x60])([^\\r\\n"'\\x60]{8,})\\3/gi, (match, prefix, key, quote, literal) => literal.includes("\${") || /^(?:true|false|null|undefined|process\\.|req(?:uest)?\\.|ctx\\.|params\\b|query\\b|body\\b|\\[REDACTED:)/i.test(literal.trim()) ? match : prefix + quote + "[REDACTED: " + secretLabel(key) + "]" + quote)
         .replace(/([?&](?:password|passwd|pwd|credential|token|api[_-]?key|apikey|secret|access[_-]?key)=)[^&\\s]+/gi, "$1[REDACTED]")
     }
 
@@ -175,13 +175,19 @@ export const scannerTemplate = Sandbox.template()
             category: Type.String(), description: Type.String(), capability: Type.String(),
             dataAccessed: Type.Optional(Type.Array(Type.String())), destination: Type.Optional(Type.String()),
             leavesDevice: Type.Optional(Type.Boolean()), expectedForApplication: Type.Optional(Type.Boolean()),
-            whySuspicious: Type.String(), file: Type.String(), line: Type.Optional(Type.Integer()),
+            whySuspicious: Type.String(), file: Type.String(), line: Type.Integer(),
             relatedFiles: Type.Optional(Type.Array(Type.String())), confidence: Type.Number(),
+            evidence: Type.Array(Type.Object({
+              file: Type.String(), startLine: Type.Integer(), endLine: Type.Integer(), explanation: Type.String(),
+            }), { minItems: 1, maxItems: 10 }),
           })),
           securityIssues: Type.Array(Type.Object({
-            category: Type.String(), file: Type.String(), line: Type.Optional(Type.Integer()),
+            category: Type.String(), file: Type.String(), line: Type.Integer(),
             description: Type.String(), severity: StringEnum(["high", "critical"]),
             confidence: Type.Number(), relatedFiles: Type.Optional(Type.Array(Type.String())),
+            evidence: Type.Array(Type.Object({
+              file: Type.String(), startLine: Type.Integer(), endLine: Type.Integer(), explanation: Type.String(),
+            }), { minItems: 1, maxItems: 10 }),
           })),
           externalServices: Type.Array(Type.Object({
             host: Type.Optional(Type.String()), purpose: Type.Optional(Type.String()),
@@ -192,6 +198,7 @@ export const scannerTemplate = Sandbox.template()
         }),
         async execute(_toolCallId, params) {
           if (reportSubmitted) throw new Error("CodeVet report was already submitted")
+          await validateReportLocations(params)
           const report = JSON.stringify({ ...params, summary: params.summary ?? null })
           if (Buffer.byteLength(report) > ${MAX_AGENT_OUTPUT_BYTES}) {
             throw new Error("CodeVet report exceeds the output budget")
@@ -264,6 +271,43 @@ export const scannerTemplate = Sandbox.template()
         return undefined
       }
 
+      async function validateSourceLocation(file, startLine, endLine = startLine) {
+        if (!Number.isInteger(startLine) || !Number.isInteger(endLine) || startLine < 1 || endLine < startLine || endLine - startLine > 40) throw new Error("Invalid source line range")
+        const target = await repositoryTarget(file)
+        if (!target) throw new Error("Report cites an unreadable repository path")
+        const info = await stat(target)
+        if (!info.isFile() || info.size > MAX_SINGLE_FILE_READ_BYTES) throw new Error("Report citation is not a readable source file")
+        const bytes = await readFile(target)
+        if (bytes.includes(0)) throw new Error("Report citation is not a text source file")
+        const lines = bytes.toString("utf8").split(/\\r?\\n/)
+        if (endLine > lines.length) throw new Error("Report cites a line outside the source file")
+        return {
+          file: target.slice(repositoryPrefix.length),
+          code: redactSensitiveText(lines.slice(startLine - 1, endLine).join("\\n")).slice(0, 4000),
+        }
+      }
+
+      async function validateReportLocations(report) {
+        const findings = [...report.suspiciousBehaviors, ...report.securityIssues]
+        if (findings.length > 50 || report.externalServices.length > 50) throw new Error("Report has too many items")
+        for (const finding of findings) {
+          finding.file = (await validateSourceLocation(finding.file, finding.line)).file
+          if (!Array.isArray(finding.evidence) || finding.evidence.length === 0 || finding.evidence.length > 10) throw new Error("A finding requires bounded source evidence")
+          for (const evidence of finding.evidence) {
+            const trusted = await validateSourceLocation(evidence.file, evidence.startLine, evidence.endLine)
+            evidence.file = trusted.file
+            evidence.code = trusted.code
+          }
+          if (finding.relatedFiles) {
+            for (let i = 0; i < finding.relatedFiles.length; i += 1) finding.relatedFiles[i] = (await validateSourceLocation(finding.relatedFiles[i], 1)).file
+          }
+        }
+        for (const service of report.externalServices) {
+          if ((service.file === undefined) !== (service.line === undefined)) throw new Error("Service file and line must be supplied together")
+          if (service.file !== undefined) service.file = (await validateSourceLocation(service.file, service.line)).file
+        }
+      }
+
       function isGeneratedPath(target) {
         if (target === repositoryRoot) return false
         return target.slice(repositoryPrefix.length).split(sep).some((part) => GENERATED_DIRECTORY.has(part))
@@ -300,8 +344,6 @@ export const scannerTemplate = Sandbox.template()
             "--glob", "!**/.git/**",
             "--glob", "!**/.env", "--glob", "!**/.env.*",
             "--glob", "!**/*.{pem,key,p8,p12,pfx,jks,keystore,crt,cer,der,p7b,p7c}",
-            "--glob", "!**/{secret,secrets,credential,credentials,auth-credentials,auth_credentials,keystore,truststore}",
-            "--glob", "!**/{secret,secrets,credential,credentials,auth-credentials,auth_credentials,keystore,truststore}/**",
             "--glob", "!**/{secret,secrets,credential,credentials,auth-credentials,auth_credentials,keystore,truststore}.{yml,yaml,json,ini,conf,config,toml,xml,properties,txt}",
           )
           for (const directory of GENERATED_DIRECTORY) args.push("--glob", "!**/" + directory + "/**")
@@ -381,7 +423,7 @@ export const scannerTemplate = Sandbox.template()
       }
 
       async function fallbackFiles(directory, output) {
-        if (output.length >= MAX_PRELOADED_FILES * 4) return
+        if (output.length >= ${MAX_INVENTORY_FILES}) return
         let entries
         try {
           entries = await readdir(directory, { withFileTypes: true })
@@ -390,14 +432,14 @@ export const scannerTemplate = Sandbox.template()
         }
         entries.sort((a, b) => a.name.localeCompare(b.name))
         for (const entry of entries) {
-          if (output.length >= MAX_PRELOADED_FILES * 4) return
+          if (output.length >= ${MAX_INVENTORY_FILES}) return
           if (entry.name === ".git" || GENERATED_DIRECTORY.has(entry.name)) continue
           const path = resolve(directory, entry.name)
           if (entry.isDirectory()) {
             await fallbackFiles(path, output)
           } else if (
             entry.isFile() &&
-            /(?:^|\\/)(?:README(?:\\.[^/]*)?|package\\.json|pyproject\\.toml|requirements\\.txt|go\\.mod|Cargo\\.toml|pom\\.xml|Dockerfile[^/]*)$|\\.(?:ts|tsx|js|jsx|mjs|cjs|py|go|rs|java|kt|rb|php|c|h|cc|cpp|cs|swift|dart|lua|sh|ya?ml|toml)$/i.test(path)
+            /(?:^|\\/)(?:README(?:\\.[^/]*)?|package\\.json|pyproject\\.toml|requirements\\.txt|go\\.mod|Cargo\\.toml|pom\\.xml|Dockerfile[^/]*|main|index|app|server|cli)$|\\.(?:ts|tsx|js|jsx|mjs|cjs|py|go|rs|java|kt|rb|php|c|h|cc|cpp|cs|swift|dart|lua|sh|ya?ml|toml)$/i.test(path)
           ) {
             output.push(path)
           }
@@ -421,6 +463,13 @@ export const scannerTemplate = Sandbox.template()
         }
         const fallback = []
         await fallbackFiles(repositoryRoot, fallback)
+        // Traversal order must not decide coverage. Prefer metadata and likely
+        // entrypoints, then shallower source files; a large alphabetically
+        // early directory can no longer consume the fallback pool.
+        const fallbackRank = (path) =>
+          /(?:^|\\/)(?:README(?:\\.[^/]*)?|package\\.json|pyproject\\.toml|requirements\\.txt|go\\.mod|Cargo\\.toml|pom\\.xml|Dockerfile[^/]*)$/i.test(path) ? 0 :
+          /(?:^|\\/)(?:main|index|app|server|cli)(?:\\.(?:[cm]?[jt]sx?|py|go|rs|rb|php))?$/i.test(path) ? 1 : 2
+        fallback.sort((a, b) => fallbackRank(a) - fallbackRank(b) || a.split(sep).length - b.split(sep).length || a.localeCompare(b))
 
         // Always reserve early slots for project metadata, then prioritize
         // evidence-related paths and finally general source-code coverage.
@@ -1147,17 +1196,31 @@ for (const line of fs.readFileSync(input, 'utf8').split('\\n')) {
 // follows values; Step 1 only orders concrete match locations.
 candidates.sort((a, b) => b.score - a.score || a.file.localeCompare(b.file) || a.line - b.line)
 const selected = []
+const selectedKeys = new Set()
 const selectedByCategory = new Map()
-for (const candidate of candidates) {
+const categoryCap = (category) => Math.min(categoryLimit, category === 'supply_chain' ? 32 : 24)
+const take = (candidate) => {
   const count = selectedByCategory.get(candidate.category) || 0
-  // Context-dependent sinks remain leads even when Step 1 cannot see their
-  // input on the same line. Pi must validate the actual source-to-sink path.
-  const perCategoryLimit = candidate.category === 'supply_chain' ? 32 : 24
-  if (count >= Math.min(categoryLimit, perCategoryLimit)) continue
+  if (selected.length >= limit || count >= categoryCap(candidate.category)) return false
+  const key = candidate.category + ':' + candidate.file + ':' + candidate.line
+  if (selectedKeys.has(key)) return false
   selected.push(candidate)
+  selectedKeys.add(key)
   selectedByCategory.set(candidate.category, count + 1)
-  if (selected.length >= limit) break
+  return true
 }
+// Reserve a small fair share for every category before global score filling.
+// Otherwise one noisy high-tier category can consume the total cap and starve
+// a high-value lead in a later category.
+const categories = [...new Set(candidates.map((candidate) => candidate.category))]
+for (let round = 0; round < 4 && selected.length < limit; round += 1) {
+  for (const category of categories) {
+    const candidate = candidates.filter((item) => item.category === category)[round]
+    if (candidate) take(candidate)
+  }
+}
+for (const candidate of candidates) take(candidate)
+selected.sort((a, b) => b.score - a.score || a.file.localeCompare(b.file) || a.line - b.line)
 const encode = (value) => Buffer.from(String(value)).toString('base64')
 for (const candidate of selected) {
   process.stdout.write('CODEVET_CANDIDATE:' + candidate.category + ':' + encode(candidate.file) + ':' + candidate.line + ':' + candidate.column + ':' + encode(candidate.text) + ':' + encode(candidate.match) + '\\n')
