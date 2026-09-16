@@ -21,6 +21,8 @@ export const SANDBOX_IDLE_TIMEOUT_MINUTES = 25;
 export const SCANNER_TIMEOUT_SEC = boundedPositiveIntegerEnv('CODEVET_SCANNER_TIMEOUT_SEC', 900, 1_200);
 // This is protocol backpressure, not a scan-result quota.
 export const MAX_SANDBOX_OUTPUT_BYTES = 128 * 1024 * 1024;
+// Bound secret-presence records produced by the local scanner.
+export const MAX_SECRET_FINDINGS = 10_000;
 export const CONTEXT_LINES_EACH_SIDE = 3;
 /**
  * Step 2 — bounded Pi enrichment limits. These control model-visible input,

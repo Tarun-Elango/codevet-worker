@@ -1,6 +1,6 @@
 import { Sandbox } from 'railway';
 import { PI_AGENT_INTEGRITY, PI_AGENT_PACKAGE, PI_AGENT_VERSION, parseScannerOutput } from './analysis.js';
-import { CONTEXT_LINES_EACH_SIDE, MAX_AGENT_GREP_COLUMNS, MAX_AGENT_GREP_GLOB_BYTES, MAX_AGENT_GREP_MATCHES_PER_FILE, MAX_AGENT_GREP_OUTPUT_BYTES, MAX_AGENT_GREP_PATTERN_BYTES, MAX_AGENT_GREP_PROCESS_OUTPUT_MULTIPLIER, MAX_AGENT_GREP_RESULTS, MAX_AGENT_LIST_RESULTS, MAX_AGENT_LLM_TURNS, MAX_AGENT_OUTPUT_BYTES, MAX_AGENT_PRELOADED_BYTES, MAX_AGENT_PRELOADED_FILES, MAX_AGENT_READ_BYTES, MAX_AGENT_SINGLE_FILE_READ_BYTES, MAX_AGENT_TOOL_CALLS, MAX_SANDBOX_OUTPUT_BYTES, MIN_FILES_TO_INSPECT, SANDBOX_EXEC_START_RETRIES, SANDBOX_IDLE_TIMEOUT_MINUTES, SANDBOX_START_TIMEOUT_MS, SANDBOX_STATUS_POLL_MS, SCANNER_TIMEOUT_SEC, } from './limits.js';
+import { CONTEXT_LINES_EACH_SIDE, MAX_AGENT_GREP_COLUMNS, MAX_AGENT_GREP_GLOB_BYTES, MAX_AGENT_GREP_MATCHES_PER_FILE, MAX_AGENT_GREP_OUTPUT_BYTES, MAX_AGENT_GREP_PATTERN_BYTES, MAX_AGENT_GREP_PROCESS_OUTPUT_MULTIPLIER, MAX_AGENT_GREP_RESULTS, MAX_AGENT_LIST_RESULTS, MAX_AGENT_LLM_TURNS, MAX_AGENT_OUTPUT_BYTES, MAX_AGENT_PRELOADED_BYTES, MAX_AGENT_PRELOADED_FILES, MAX_AGENT_READ_BYTES, MAX_AGENT_SINGLE_FILE_READ_BYTES, MAX_AGENT_TOOL_CALLS, MAX_SANDBOX_OUTPUT_BYTES, MAX_SECRET_FINDINGS, MIN_FILES_TO_INSPECT, SANDBOX_EXEC_START_RETRIES, SANDBOX_IDLE_TIMEOUT_MINUTES, SANDBOX_START_TIMEOUT_MS, SANDBOX_STATUS_POLL_MS, SCANNER_TIMEOUT_SEC, } from './limits.js';
 /**
  * STEP C — Build the disposable scanner environment.
  *
@@ -771,11 +771,12 @@ export async function runSandboxStep1(job) {
         # STEP G — Inspect conventionally sensitive files locally. Their
         # contents must not cross the sandbox boundary, so this emits only a
         # path, line, secret classification, and a non-reversible HMAC fingerprint.
-        node - <<'SECRET_PRESENCE_SCANNER'
+        node - ${MAX_SECRET_FINDINGS} <<'SECRET_PRESENCE_SCANNER'
         const fs = require('node:fs')
         const path = require('node:path')
         const crypto = require('node:crypto')
 
+        const maxFindings = Number(process.argv[2])
         // This ephemeral key is never emitted. HMAC avoids making a weak
         // password recoverable through an offline SHA-256 dictionary attack.
         const fingerprintKey = crypto.randomBytes(32)
@@ -790,6 +791,7 @@ export async function runSandboxStep1(job) {
         }
 
         function emit(file, line, secretType, value) {
+          if (findings >= maxFindings) return
           // Base64 prevents a repository-controlled filename/type from
           // corrupting this line-oriented protocol. Never print value.
           const encodedFile = Buffer.from(file).toString('base64')
@@ -870,6 +872,7 @@ export async function runSandboxStep1(job) {
           let entries
           try { entries = fs.readdirSync(directory, { withFileTypes: true }) } catch { return }
           for (const entry of entries) {
+            if (findings >= maxFindings) return
             if (entry.name === '.git') continue
             const full = path.join(directory, entry.name)
             if (entry.isDirectory()) {
