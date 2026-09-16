@@ -310,18 +310,26 @@ export function buildAgentPrompt(result) {
     addItems(leads.inventory.frameworks, result.inventory.frameworks.map(bounded));
     addItems(leads.inventory.entrypoints, result.inventory.entrypoints.map(bounded));
     const candidates = rankedCandidates(result.candidates);
-    addItems(leads.leadGroups.downloadExecutePersistenceObfuscation, candidates.filter((item) => candidateLeadRank(item) === 1).slice(0, 12).map(bounded));
+    // Derived behavior/network evidence is stronger than its identical regex
+    // lead; retain raw candidates only when no such evidence was derived.
+    const rawCandidates = candidates.filter((candidate) => ![
+        ...result.behaviors,
+        ...result.networkCalls,
+    ].some((evidence) => evidence.file === candidate.file && evidence.line === candidate.line &&
+        evidence.column === candidate.column && evidence.code === candidate.code &&
+        evidence.match === candidate.match));
+    addItems(leads.leadGroups.downloadExecutePersistenceObfuscation, rawCandidates.filter((item) => candidateLeadRank(item) === 1).slice(0, 12).map(bounded));
     addItems(leads.leadGroups.possibleSensitiveEgress, result.candidateFlows.slice(0, 12).map(bounded));
     addItems(leads.leadGroups.sensitiveCapabilityOrDataAccess, [
         ...result.behaviors.filter((item) => SENSITIVE_FLOW_SOURCES.includes(item.category)),
-        ...candidates.filter((item) => candidateLeadRank(item) === 3),
+        ...rawCandidates.filter((item) => candidateLeadRank(item) === 3),
     ].slice(0, 20).map(bounded));
     addItems(leads.leadGroups.unexpectedProcessFilesystemNetwork, [
         ...result.behaviors.filter((item) => !SENSITIVE_FLOW_SOURCES.includes(item.category)),
         ...result.networkCalls,
-        ...candidates.filter((item) => candidateLeadRank(item) === 4),
+        ...rawCandidates.filter((item) => candidateLeadRank(item) === 4),
     ].slice(0, 24).map(bounded));
-    addItems(leads.leadGroups.majorSecuritySinksRequiringValidation, candidates.filter((item) => candidateLeadRank(item) === 5).slice(0, 20).map(bounded));
+    addItems(leads.leadGroups.majorSecuritySinksRequiringValidation, rawCandidates.filter((item) => candidateLeadRank(item) === 5).slice(0, 20).map(bounded));
     const json = JSON.stringify(leads);
     if (Buffer.byteLength(json) > evidenceBudget) {
         throw new Error('agent evidence exceeds prompt budget');

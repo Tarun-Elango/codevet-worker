@@ -194,6 +194,7 @@ function candidateLeadRank(candidate) {
 }
 function rankedCandidates(candidates) {
     return [...candidates].sort((a, b) => candidateLeadRank(a) - candidateLeadRank(b) ||
+        b.score - a.score ||
         a.file.localeCompare(b.file) || a.line - b.line);
 }
 /** A validated behavior/call supersedes its identical raw discovery lead in
@@ -579,7 +580,7 @@ export function redactSensitiveText(value) {
         .replace(/([?&](?:password|passwd|pwd|credential|token|api[_-]?key|apikey|secret|access[_-]?key)=)[^&\s]+/gi, '$1[REDACTED]');
 }
 function isSensitivePath(file) {
-    return /(?:^|\/)\.env(?:\.|$)|(?:^|\/)(?:secrets?|credentials?)\.(?:ya?ml|json|ini|conf)$|\.(?:pem|key|p12|pfx)$/i.test(normalizePath(file));
+    return /(?:^|\/)\.env(?:\.|$)|(?:^|\/)(?:secrets?|credentials?|auth[_-]?credentials?|keystore|truststore)(?:\/|$|\.(?:ya?ml|json|ini|conf|config|toml|xml|properties|txt))|(?:^|\/)id_(?:rsa|dsa|ecdsa|ed25519)(?:\.pub)?$|\.(?:pem|key|p8|p12|pfx|jks|keystore|crt|cer|der|p7b|p7c)$/i.test(normalizePath(file));
 }
 function safeText(file, value, maxLength) {
     // Do not return contents from files conventionally used for secrets. A
@@ -612,6 +613,7 @@ function addCandidate(candidates, raw, category) {
         column: Math.max(1, raw.column),
         code,
         match,
+        score: typeof raw.score === 'number' && Number.isFinite(raw.score) ? raw.score : 0,
     });
 }
 function addFinding(findings, candidate, rule) {
@@ -911,7 +913,7 @@ function secretPresenceSecurityFindings(secretFindings) {
     });
 }
 function parseDiscoveryCandidate(line, candidates) {
-    const match = line.match(/^CODEVET_CANDIDATE:(keyboard_input|microphone_access|sensitive_system_access|external_http|process_execution|clipboard_access|credential_handling|tracking_telemetry|security_signal|supply_chain):([A-Za-z0-9+/=]+):(\d+):(\d+):([A-Za-z0-9+/=]*):([A-Za-z0-9+/=]*)$/);
+    const match = line.match(/^CODEVET_CANDIDATE:(keyboard_input|microphone_access|sensitive_system_access|external_http|process_execution|clipboard_access|credential_handling|tracking_telemetry|security_signal|supply_chain):([A-Za-z0-9+/=]+):(\d+):(\d+):([A-Za-z0-9+/=]*):([A-Za-z0-9+/=]*)(?::(-?\d+(?:\.\d+)?))?$/);
     if (!match)
         return false;
     try {
@@ -923,6 +925,7 @@ function parseDiscoveryCandidate(line, candidates) {
             column: Number(match[4]),
             text: Buffer.from(match[5], 'base64').toString('utf8'),
             match: Buffer.from(match[6], 'base64').toString('utf8'),
+            score: match[7] === undefined ? 0 : Number(match[7]),
         };
         addCandidate(candidates, raw, match[1]);
     }

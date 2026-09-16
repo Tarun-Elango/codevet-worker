@@ -60,7 +60,7 @@ flowchart TD
   Q -- No --> N["Output: ScannerResult\nagentAnalysis: null"]
   Q -- Yes --> B["Build bounded prompt and priority paths\nOutput: prompt + path list"]
   B --> I["Pi investigator reads allowed repository files\nOutput: cited AgentAnalysis draft"]
-  I --> V["Fresh Pi verifier independently reviews compact Step 1 index + draft against source\nOutput: cited, verified AgentAnalysis"]
+  I --> V["Fresh Pi verifier adjudicates cited claims + runs a small targeted omission sweep\nOutput: cited, verified AgentAnalysis"]
   V --> X["Trusted code validates, normalizes, and combines coverage"]
   X --> F["Output: ScannerResult\nagentAnalysis: final analysis"]
   N --> D["Destroy sandbox"]
@@ -74,7 +74,7 @@ flowchart TD
 | Configuration check | Determines whether the provider API key and explicit model are available. | Skip, or AI configuration |
 | Prompt build | Converts Step 1 metadata and ranked leads into a capped prompt. Sensitive-file findings and deterministic findings are excluded. | Prompt text and prioritized file paths |
 | Investigator | Pi inspects allowed files with `read`, `grep`, `find`, and `ls`; it must submit one report through `codevet_report`, with exact source evidence for every finding. | Investigator `AgentAnalysis` draft |
-| Verifier | A new Pi session receives a compact Step 1 index (category, file/line, and priority) and the investigator draft. Its preloaded-file priorities put investigator citations first, then Step 1 leads. It independently reviews priority paths, entrypoints, auth/request handling, and the draft's claims against the checkout. | Verified `AgentAnalysis` |
+| Verifier | A new Pi session receives a compact Step 1 index (category, file/line, and priority) and the investigator draft. Its preloaded-file priorities put investigator citations first, then Step 1 leads. It adjudicates each cited claim against source and relevant callers, then performs only a small targeted omission sweep of the highest-priority relevant paths. | Verified `AgentAnalysis` |
 | Validation | Trusted sandbox code checks report paths and line ranges against readable checkout files, injects redacted source excerpts for citations, and enforces report bounds. Host code validates JSON shape and output size, deduplicates findings, normalizes contradictory verdict/risk values, and combines trusted coverage from both passes. Invalid, timed-out, or failed AI work becomes a non-fatal result. | `AgentAnalysis` with `completed`, `failed`, or `timeout` status |
 | Final result | Adds the verified analysis to the deterministic Step 1 result. If the investigator does not complete, the verifier is not run. | `ScannerResult { ...step1, agentAnalysis }` |
 
@@ -94,17 +94,18 @@ Environment values may lower the scan deadline or raise it only up to its listed
 
 ## Step 2: Configurable Limits
 
-Step 2 has configurable process limits plus fixed tool and model-inspection budgets. Both the investigator and verifier run under these budgets independently.
+Step 2 has configurable process limits plus fixed tool and model-inspection budgets. The investigator receives the full discovery budget; the verifier receives a deliberately smaller adjudication budget.
 
 | Control | Default | Maximum | Effect |
 |---|---:|---:|---|
-| `CODEVET_AI_TIMEOUT_SEC` | 900 seconds | 1,200 seconds | Per-Pi-pass timeout |
+| `CODEVET_AI_TIMEOUT_SEC` | 1,200 seconds | 1,800 seconds | Investigator timeout |
+| `CODEVET_VERIFIER_TIMEOUT_SEC` | 300 seconds | 600 seconds | Verifier timeout |
 | `CODEVET_AI_MAX_OUTPUT_BYTES` | 256 KB | 256 KB | Per-pass process/report output cap |
 | Prompt | 64 KB | fixed | Limits Step 1 evidence sent to Pi |
-| Preloaded context | 8 files / 256 KB | fixed | Initial source context only |
-| File reads | 200 KB/file; 20 MB total | fixed | Limits model-visible repository content |
-| Tool use | 200 calls; 100 LLM turns | fixed | Limits AI inspection work |
-| Directory listing | 250 results | fixed | Limits `find`/`ls` output |
-| Grep | 200 matches / 32 KB per call | fixed | Limits redacted search results |
+| Preloaded context | Investigator: 16 files / 512 KB; verifier: 8 files / 256 KB | fixed | Initial source context only |
+| File reads | 512 KB/file; investigator: 50 MB total; verifier: 10 MB total | fixed | Limits model-visible repository content |
+| Tool use | Investigator: 450 calls / 175 LLM turns; verifier: 100 calls / 40 LLM turns | fixed | Limits AI inspection work |
+| Directory listing | Investigator: 500; verifier: 250 results | fixed | Limits `find`/`ls` output |
+| Grep | Investigator: 500 matches / 64 KB; verifier: 200 matches / 32 KB per call | fixed | Limits redacted search results |
 
 Pi may access only existing, non-sensitive, non-generated files below `/workspace/repo`. It cannot use write or execution tools, read `.git` or conventional secret/key/certificate files, follow escaping symlinks, load extensions/skills/prompt templates, or run repository code. Source returned by its tools and trusted citation excerpts is redacted before reaching the model/provider.

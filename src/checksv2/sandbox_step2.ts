@@ -11,6 +11,7 @@ import {
   AGENT_SYSTEM_PROMPT,
   VERIFIER_SYSTEM_PROMPT,
   AGENT_TIMEOUT_SEC,
+  VERIFIER_TIMEOUT_SEC,
   MAX_AGENT_OUTPUT_BYTES,
   MAX_VERIFIER_PROMPT_BYTES,
   MIN_FILES_TO_INSPECT,
@@ -38,6 +39,9 @@ async function runAgentPass(
       JSON.stringify(priorityFiles)
     )
     const command = `
+      # Never accept a previous role's output. Both artifacts must be created
+      # by this Pi invocation after it starts successfully.
+      rm -f /tmp/codevet-agent-report.json /tmp/codevet-agent-metrics.json || exit 1
       # The prompt is root-readable only. Pipe it into Pi before dropping
       # privileges so it is not another file the model can ask Pi to inspect.
       # Print mode merges piped stdin into its initial prompt without an
@@ -55,6 +59,7 @@ async function runAgentPass(
         CODEVET_AI_MODEL="$CODEVET_AI_MODEL" \\
         CODEVET_AGENT_SYSTEM_PROMPT="$CODEVET_AGENT_SYSTEM_PROMPT" \\
         CODEVET_AGENT_API_KEY="$CODEVET_AGENT_API_KEY" \\
+        CODEVET_AGENT_ROLE="${role}" \\
         ${agent.piKeyEnv}="$CODEVET_AGENT_API_KEY" \\
         bash --noprofile --norc -c '
           cd /workspace/repo
@@ -88,7 +93,7 @@ async function runAgentPass(
         CODEVET_AI_MODEL: agent.model,
         CODEVET_AGENT_SYSTEM_PROMPT: systemPrompt,
       },
-      timeoutSec: AGENT_TIMEOUT_SEC,
+      timeoutSec: role === 'verifier' ? VERIFIER_TIMEOUT_SEC : AGENT_TIMEOUT_SEC,
       onStdout(chunk) {
         outputBytes += Buffer.byteLength(chunk)
         if (outputBytes > MAX_AGENT_OUTPUT_BYTES) {

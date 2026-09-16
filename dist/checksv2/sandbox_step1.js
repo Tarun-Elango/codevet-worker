@@ -1,6 +1,6 @@
 import { Sandbox } from 'railway';
 import { PI_AGENT_INTEGRITY, PI_AGENT_PACKAGE, PI_AGENT_VERSION, parseScannerOutput } from './analysis.js';
-import { CONTEXT_LINES_EACH_SIDE, MAX_AGENT_GREP_COLUMNS, MAX_AGENT_GREP_GLOB_BYTES, MAX_AGENT_GREP_MATCHES_PER_FILE, MAX_AGENT_GREP_OUTPUT_BYTES, MAX_AGENT_GREP_PATTERN_BYTES, MAX_AGENT_GREP_PROCESS_OUTPUT_MULTIPLIER, MAX_AGENT_GREP_RESULTS, MAX_AGENT_LIST_RESULTS, MAX_AGENT_LLM_TURNS, MAX_AGENT_OUTPUT_BYTES, MAX_AGENT_PRELOADED_BYTES, MAX_AGENT_PRELOADED_FILES, MAX_AGENT_READ_BYTES, MAX_AGENT_SINGLE_FILE_READ_BYTES, MAX_AGENT_TOOL_CALLS, MAX_SANDBOX_OUTPUT_BYTES, MAX_SECRET_FINDINGS, MIN_FILES_TO_INSPECT, SANDBOX_EXEC_START_RETRIES, SANDBOX_IDLE_TIMEOUT_MINUTES, SANDBOX_START_TIMEOUT_MS, SANDBOX_STATUS_POLL_MS, SCANNER_TIMEOUT_SEC, } from './limits.js';
+import { CONTEXT_LINES_EACH_SIDE, MAX_AGENT_GREP_COLUMNS, MAX_AGENT_GREP_GLOB_BYTES, MAX_AGENT_GREP_MATCHES_PER_FILE, MAX_AGENT_GREP_OUTPUT_BYTES, MAX_AGENT_GREP_PATTERN_BYTES, MAX_AGENT_GREP_PROCESS_OUTPUT_MULTIPLIER, MAX_AGENT_GREP_RESULTS, MAX_AGENT_LIST_RESULTS, MAX_AGENT_LLM_TURNS, MAX_AGENT_OUTPUT_BYTES, MAX_AGENT_PRELOADED_BYTES, MAX_AGENT_PRELOADED_FILES, MAX_AGENT_READ_BYTES, MAX_AGENT_SINGLE_FILE_READ_BYTES, MAX_AGENT_TOOL_CALLS, MAX_VERIFIER_GREP_OUTPUT_BYTES, MAX_VERIFIER_GREP_RESULTS, MAX_VERIFIER_LIST_RESULTS, MAX_VERIFIER_LLM_TURNS, MAX_VERIFIER_PRELOADED_BYTES, MAX_VERIFIER_PRELOADED_FILES, MAX_VERIFIER_READ_BYTES, MAX_VERIFIER_TOOL_CALLS, MAX_SANDBOX_OUTPUT_BYTES, MAX_SECRET_FINDINGS, MAX_DISCOVERY_CANDIDATES_PER_CATEGORY, MAX_DISCOVERY_COLUMNS, MAX_DISCOVERY_FILE_BYTES, MAX_DISCOVERY_MATCHES_PER_FILE, MAX_CONTEXT_CANDIDATES, MAX_SELECTED_CANDIDATES_PER_CATEGORY, MIN_FILES_TO_INSPECT, SANDBOX_EXEC_START_RETRIES, SANDBOX_IDLE_TIMEOUT_MINUTES, SANDBOX_START_TIMEOUT_MS, SANDBOX_STATUS_POLL_MS, SCANNER_TIMEOUT_SEC, } from './limits.js';
 /**
  * STEP C — Build the disposable scanner environment.
  *
@@ -64,19 +64,22 @@ export const scannerTemplate = Sandbox.template()
     // be exposed to the model/provider. Deterministic scanning handles them
     // locally and emits metadata only. Match path segments, not merely the
     // requested spelling, after canonicalization.
-    const SENSITIVE_REPOSITORY_PATH = /(?:^|\\/)\\.env(?:\\.|$)|(?:^|\\/)(?:secrets?|credentials?|auth[_-]?credentials?|keystore|truststore)\\.(?:ya?ml|json|ini|conf|config|toml|xml|properties|txt)$|(?:^|\\/)id_(?:rsa|dsa|ecdsa|ed25519)$|\\.(?:pem|key|p8|p12|pfx|jks|keystore|crt|cer|der|p7b|p7c)$/i
+    const SENSITIVE_REPOSITORY_PATH = /(?:^|\\/)\\.env(?:\\.|$)|(?:^|\\/)(?:secrets?|credentials?|auth[_-]?credentials?|keystore|truststore)(?:\\/|$|\\.(?:ya?ml|json|ini|conf|config|toml|xml|properties|txt))|(?:^|\\/)id_(?:rsa|dsa|ecdsa|ed25519)(?:\\.pub)?$|\\.(?:pem|key|p8|p12|pfx|jks|keystore|crt|cer|der|p7b|p7c)$/i
     const GENERATED_DIRECTORY = new Set(["node_modules", "vendor", "dist", "build", "target", "coverage", ".next", ".nuxt", "out", "bin", "obj", ".cache", "__pycache__", ".venv", "venv", "generated"])
-    const MAX_LLM_TURNS = ${MAX_AGENT_LLM_TURNS}
-    const MAX_TOOL_CALLS = ${MAX_AGENT_TOOL_CALLS}
+    // The host alone sets this environment value. The verifier has a focused
+    // adjudication budget so it cannot repeat the investigator's broad sweep.
+    const IS_VERIFIER = process.env.CODEVET_AGENT_ROLE === "verifier"
+    const MAX_LLM_TURNS = IS_VERIFIER ? ${MAX_VERIFIER_LLM_TURNS} : ${MAX_AGENT_LLM_TURNS}
+    const MAX_TOOL_CALLS = IS_VERIFIER ? ${MAX_VERIFIER_TOOL_CALLS} : ${MAX_AGENT_TOOL_CALLS}
     const MIN_FILES_TO_INSPECT = ${MIN_FILES_TO_INSPECT}
-    const MAX_READ_BYTES = ${MAX_AGENT_READ_BYTES}
-    const MAX_PRELOADED_FILES = ${MAX_AGENT_PRELOADED_FILES}
-    const MAX_PRELOADED_BYTES = ${MAX_AGENT_PRELOADED_BYTES}
+    const MAX_READ_BYTES = IS_VERIFIER ? ${MAX_VERIFIER_READ_BYTES} : ${MAX_AGENT_READ_BYTES}
+    const MAX_PRELOADED_FILES = IS_VERIFIER ? ${MAX_VERIFIER_PRELOADED_FILES} : ${MAX_AGENT_PRELOADED_FILES}
+    const MAX_PRELOADED_BYTES = IS_VERIFIER ? ${MAX_VERIFIER_PRELOADED_BYTES} : ${MAX_AGENT_PRELOADED_BYTES}
     const MAX_FALLBACK_FILES = 1_000
     const MAX_SINGLE_FILE_READ_BYTES = ${MAX_AGENT_SINGLE_FILE_READ_BYTES}
-    const MAX_LIST_RESULTS = ${MAX_AGENT_LIST_RESULTS}
-    const MAX_GREP_RESULTS = ${MAX_AGENT_GREP_RESULTS}
-    const MAX_GREP_OUTPUT_BYTES = ${MAX_AGENT_GREP_OUTPUT_BYTES}
+    const MAX_LIST_RESULTS = IS_VERIFIER ? ${MAX_VERIFIER_LIST_RESULTS} : ${MAX_AGENT_LIST_RESULTS}
+    const MAX_GREP_RESULTS = IS_VERIFIER ? ${MAX_VERIFIER_GREP_RESULTS} : ${MAX_AGENT_GREP_RESULTS}
+    const MAX_GREP_OUTPUT_BYTES = IS_VERIFIER ? ${MAX_VERIFIER_GREP_OUTPUT_BYTES} : ${MAX_AGENT_GREP_OUTPUT_BYTES}
 
     function secretLabel(key) {
       const normalized = key.replace(/([a-z])([A-Z])/g, "$1_$2").replace(/[^A-Za-z0-9]+/g, "_").toUpperCase()
@@ -375,17 +378,20 @@ export const scannerTemplate = Sandbox.template()
         }
       }
 
+      const fallbackRank = (path) =>
+        /(?:^|\\/)(?:README(?:\\.[^/]*)?|package\\.json|pyproject\\.toml|requirements\\.txt|go\\.mod|Cargo\\.toml|pom\\.xml|Dockerfile[^/]*)$/i.test(path) ? 0 :
+        /(?:^|\\/)(?:main|index|app|server|cli)(?:\\.(?:[cm]?[jt]sx?|py|go|rs|rb|php))?$/i.test(path) ? 1 : 2
+      const compareFallback = (a, b) =>
+        fallbackRank(a) - fallbackRank(b) || a.split(sep).length - b.split(sep).length || a.localeCompare(b)
+
       async function fallbackFiles(directory, output) {
-        if (output.length >= MAX_FALLBACK_FILES) return
         let entries
         try {
           entries = await readdir(directory, { withFileTypes: true })
         } catch {
           return
         }
-        entries.sort((a, b) => a.name.localeCompare(b.name))
         for (const entry of entries) {
-          if (output.length >= MAX_FALLBACK_FILES) return
           if (entry.name === ".git" || GENERATED_DIRECTORY.has(entry.name)) continue
           const path = resolve(directory, entry.name)
           if (entry.isDirectory()) {
@@ -394,7 +400,13 @@ export const scannerTemplate = Sandbox.template()
             entry.isFile() &&
             /(?:^|\\/)(?:README(?:\\.[^/]*)?|package\\.json|pyproject\\.toml|requirements\\.txt|go\\.mod|Cargo\\.toml|pom\\.xml|Dockerfile[^/]*|main|index|app|server|cli)$|\\.(?:ts|tsx|js|jsx|mjs|cjs|py|go|rs|java|kt|rb|php|c|h|cc|cpp|cs|swift|dart|lua|sh|ya?ml|toml)$/i.test(path)
           ) {
-            output.push(path)
+            // Keep a bounded best-of-repository pool while traversing every
+            // directory. A large early directory cannot hide root entrypoints.
+            if (output.length < MAX_FALLBACK_FILES) output.push(path)
+            else {
+              output.sort(compareFallback)
+              if (compareFallback(path, output[output.length - 1]) < 0) output[output.length - 1] = path
+            }
           }
         }
       }
@@ -416,13 +428,9 @@ export const scannerTemplate = Sandbox.template()
         }
         const fallback = []
         await fallbackFiles(repositoryRoot, fallback)
-        // Traversal order must not decide coverage. Prefer metadata and likely
-        // entrypoints, then shallower source files; a large alphabetically
-        // early directory can no longer consume the fallback pool.
-        const fallbackRank = (path) =>
-          /(?:^|\\/)(?:README(?:\\.[^/]*)?|package\\.json|pyproject\\.toml|requirements\\.txt|go\\.mod|Cargo\\.toml|pom\\.xml|Dockerfile[^/]*)$/i.test(path) ? 0 :
-          /(?:^|\\/)(?:main|index|app|server|cli)(?:\\.(?:[cm]?[jt]sx?|py|go|rs|rb|php))?$/i.test(path) ? 1 : 2
-        fallback.sort((a, b) => fallbackRank(a) - fallbackRank(b) || a.split(sep).length - b.split(sep).length || a.localeCompare(b))
+        // Traversal order does not decide coverage; fallbackFiles retained the
+        // best bounded pool across the whole repository.
+        fallback.sort(compareFallback)
 
         // Honor caller-provided priorities first (the verifier's cited
         // evidence precedes generic leads), then add general source-code coverage.
@@ -783,7 +791,12 @@ export async function runSandboxStep1(job) {
         let findings = 0
 
         function sensitivePath(file) {
-          return /(?:^|\\/)\\.env(?:\\.|$)|(?:^|\\/)(?:secrets?|credentials?)\\.(?:ya?ml|json|ini|conf)$|\\.(?:pem|key|p12|pfx)$/i.test(file)
+          // Keep this exactly aligned with the model-read exclusion above.
+          return /(?:^|\\/)\\.env(?:\\.|$)|(?:^|\\/)(?:secrets?|credentials?|auth[_-]?credentials?|keystore|truststore)(?:\\/|$|\\.(?:ya?ml|json|ini|conf|config|toml|xml|properties|txt))|(?:^|\\/)id_(?:rsa|dsa|ecdsa|ed25519)(?:\\.pub)?$|\\.(?:pem|key|p8|p12|pfx|jks|keystore|crt|cer|der|p7b|p7c)$/i.test(file)
+        }
+
+        function exampleEnvironment(file) {
+          return /(?:^|\\/)\\.env\\.(?:example|sample|template|test|testing|development|dev|local|ci)(?:\\.|$)/i.test(file)
         }
 
         function fingerprint(value) {
@@ -847,10 +860,25 @@ export async function runSandboxStep1(job) {
           }
         }
 
+        function inspectSensitiveConfig(file, bytes) {
+          const lines = bytes.toString('utf8').split(/\\r?\\n/)
+          for (let index = 0; index < lines.length && findings < maxFindings; index += 1) {
+            // Covers dotenv, YAML, TOML, JSON, INI, properties, and common XML
+            // attribute forms without serializing a value outside the sandbox.
+            const match = lines[index].match(/^\\s*["']?([A-Za-z_][A-Za-z0-9_.-]*)["']?\\s*(?::|=)\\s*["']?([^"'#\\r\\n,}]+)["']?/) ||
+              lines[index].match(/\\b(?:name|key)=["']([A-Za-z_][A-Za-z0-9_.-]*)["'][^>]*\\bvalue=["']([^"']+)["']/i)
+            if (!match) continue
+            const value = unquote(match[2])
+            if (isPlaceholder(value)) continue
+            const secretType = envSecretType(match[1], value)
+            if (secretType) emit(file, index + 1, secretType, value)
+          }
+        }
+
         function inspectKeyMaterial(file, bytes) {
           const extension = path.extname(file).toLowerCase()
-          if (extension === '.p12' || extension === '.pfx') {
-            if (bytes.length) emit(file, 1, 'PKCS#12 key material', bytes)
+          if (/\.(?:p12|pfx|p8|jks|keystore|der)$/i.test(file)) {
+            if (bytes.length) emit(file, 1, 'cryptographic key material', bytes)
             return
           }
           const text = bytes.toString('utf8')
@@ -861,9 +889,8 @@ export async function runSandboxStep1(job) {
             const end = endMarker >= 0 ? text.indexOf('-----', endMarker + 9) + 5 : text.length
             const line = text.slice(0, start).split(/\\r?\\n/).length
             emit(file, line, 'private key', text.slice(start, end > 4 ? end : text.length))
-          } else if (extension === '.key' && bytes.length) {
-            // A .key file conventionally stores private cryptographic material,
-            // even when it is not PEM-encoded.
+          } else if ((extension === '.key' || /(?:^|\\/)id_(?:rsa|dsa|ecdsa|ed25519)$/i.test(file)) && bytes.length) {
+            // Conventional key filenames can hold non-PEM private material.
             emit(file, 1, 'cryptographic key material', bytes)
           }
         }
@@ -885,8 +912,12 @@ export async function runSandboxStep1(job) {
                 fs.statSync(full)
                 bytes = fs.readFileSync(full)
               } catch { continue }
-              if (/(?:^|\\/)\\.env(?:\\.|$)/i.test(file)) inspectEnvironment(file, bytes)
-              else inspectKeyMaterial(file, bytes)
+              if (/(?:^|\\/)\\.env(?:\\.|$)/i.test(file)) {
+                if (!exampleEnvironment(file)) inspectEnvironment(file, bytes)
+              } else {
+                inspectSensitiveConfig(file, bytes)
+                inspectKeyMaterial(file, bytes)
+              }
             }
           }
         }
@@ -969,11 +1000,20 @@ function score(candidate) {
   candidate.requiresInputCorrelation = inputDependentSink.test(text)
   return value
 }
+const limit = Number(process.argv[3])
 const best = []
+function compare(candidate, other) {
+  return other.score - candidate.score || candidate.file.localeCompare(other.file) || candidate.line - other.line
+}
 function retain(candidate) {
   candidate.score = score(candidate)
-  best.push(candidate)
-  best.sort((a, b) => b.score - a.score || a.file.localeCompare(b.file) || a.line - b.line)
+  if (best.length < limit) {
+    best.push(candidate)
+    best.sort(compare)
+  } else if (compare(candidate, best[best.length - 1]) < 0) {
+    best[best.length - 1] = candidate
+    best.sort(compare)
+  }
 }
 const input = readline.createInterface({ input: process.stdin })
 input.on('line', (line) => {
@@ -1003,6 +1043,9 @@ RANK_CATEGORY
             --hidden \
             --no-ignore \
             --ignore-case \
+            --max-filesize ${MAX_DISCOVERY_FILE_BYTES} \
+            --max-columns ${MAX_DISCOVERY_COLUMNS} \
+            --max-count ${MAX_DISCOVERY_MATCHES_PER_FILE} \
             --glob '!**/.git/**' \
             --glob '!**/node_modules/**' \
             --glob '!**/vendor/**' \
@@ -1015,7 +1058,7 @@ RANK_CATEGORY
             --glob '!**/{secret,secrets,credential,credentials}.{yml,yaml,json,ini,conf}' \
             --glob '!**/*.{pem,key,p12,pfx}' \
             "$@" \
-            . | node "$rank_category" "$category" >> "$discovery_file"
+            . | node "$rank_category" "$category" ${MAX_DISCOVERY_CANDIDATES_PER_CATEGORY} >> "$discovery_file"
           rg_status=\${PIPESTATUS[0]}
           set -e
           # A no-match exit is normal. There is no head pipe in this pass, so
@@ -1072,18 +1115,35 @@ const take = (candidate) => {
 // Reserve a small fair share for every category before global score filling.
 // Otherwise one noisy high-tier category can consume the total cap and starve
 // a high-value lead in a later category.
-const categories = [...new Set(candidates.map((candidate) => candidate.category))]
-for (let round = 0; round < 4; round += 1) {
-  for (const category of categories) {
-    const candidate = candidates.filter((item) => item.category === category)[round]
-    if (candidate) take(candidate)
+const maxSelected = ${MAX_CONTEXT_CANDIDATES}
+const maxPerCategory = ${MAX_SELECTED_CANDIDATES_PER_CATEGORY}
+const selectedPerCategory = new Map()
+const takeBounded = (candidate) => {
+  if (selected.length >= maxSelected) return false
+  const count = selectedPerCategory.get(candidate.category) || 0
+  if (count >= maxPerCategory || !take(candidate)) return false
+  selectedPerCategory.set(candidate.category, count + 1)
+  return true
+}
+const byCategory = new Map()
+for (const candidate of candidates) {
+  const group = byCategory.get(candidate.category) || []
+  group.push(candidate)
+  byCategory.set(candidate.category, group)
+}
+for (let round = 0; round < 4 && selected.length < maxSelected; round += 1) {
+  for (const group of byCategory.values()) {
+    if (group[round]) takeBounded(group[round])
   }
 }
-for (const candidate of candidates) take(candidate)
+for (const candidate of candidates) {
+  if (selected.length >= maxSelected) break
+  takeBounded(candidate)
+}
 selected.sort((a, b) => b.score - a.score || a.file.localeCompare(b.file) || a.line - b.line)
 const encode = (value) => Buffer.from(String(value)).toString('base64')
 for (const candidate of selected) {
-  process.stdout.write('CODEVET_CANDIDATE:' + candidate.category + ':' + encode(candidate.file) + ':' + candidate.line + ':' + candidate.column + ':' + encode(candidate.text) + ':' + encode(candidate.match) + '\\n')
+  process.stdout.write('CODEVET_CANDIDATE:' + candidate.category + ':' + encode(candidate.file) + ':' + candidate.line + ':' + candidate.column + ':' + encode(candidate.text) + ':' + encode(candidate.match) + ':' + candidate.score + '\\n')
 }
 const requested = new Map()
 for (const candidate of selected) {
