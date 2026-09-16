@@ -49,7 +49,7 @@ export const MAX_FLOWS = 1_000
 // Each Pi pass can legitimately spend close to the full turn/tool budget.
 // Keep the process deadline above that inspection budget instead of killing a
 // healthy run at the old five-minute mark.
-export const AGENT_TIMEOUT_SEC = boundedPositiveIntegerEnv('CODEVET_AI_TIMEOUT_SEC', 1_200, 1_800)
+export const AGENT_TIMEOUT_SEC = boundedPositiveIntegerEnv('CODEVET_AI_TIMEOUT_SEC', 900, 1_200)
 export const MAX_AGENT_OUTPUT_BYTES = boundedPositiveIntegerEnv('CODEVET_AI_MAX_OUTPUT_BYTES', 256 * 1024, 256 * 1024)
 export const MAX_AGENT_PROMPT_BYTES = 64 * 1024
 // The verifier receives the individually bounded Step 1 leads and
@@ -58,16 +58,16 @@ export const MAX_VERIFIER_PROMPT_BYTES = MAX_AGENT_PROMPT_BYTES + MAX_AGENT_OUTP
 export const MAX_AGENT_PROMPT_STRING_BYTES = 1_024
 export const MAX_AGENT_ITEMS = 50
 export const MAX_AGENT_STRING_LENGTH = 4_000
-export const MAX_AGENT_LLM_TURNS = 175
-export const MAX_AGENT_TOOL_CALLS = 450
+export const MAX_AGENT_LLM_TURNS = 100
+export const MAX_AGENT_TOOL_CALLS = 200
 export const MIN_FILES_TO_INSPECT = 2
-export const MAX_AGENT_READ_BYTES = 50 * 1024 * 1024
-export const MAX_AGENT_PRELOADED_FILES = 16
-export const MAX_AGENT_PRELOADED_BYTES = 512 * 1024
-export const MAX_AGENT_SINGLE_FILE_READ_BYTES = 512 * 1024
-export const MAX_AGENT_LIST_RESULTS = 500
-export const MAX_AGENT_GREP_RESULTS = 500
-export const MAX_AGENT_GREP_OUTPUT_BYTES = 64 * 1024
+export const MAX_AGENT_READ_BYTES = 20 * 1024 * 1024
+export const MAX_AGENT_PRELOADED_FILES = 8
+export const MAX_AGENT_PRELOADED_BYTES = 256 * 1024
+export const MAX_AGENT_SINGLE_FILE_READ_BYTES = 200 * 1024
+export const MAX_AGENT_LIST_RESULTS = 250
+export const MAX_AGENT_GREP_RESULTS = 200
+export const MAX_AGENT_GREP_OUTPUT_BYTES = 32 * 1024
 export const MAX_AGENT_GREP_PATTERN_BYTES = 500
 export const MAX_AGENT_GREP_GLOB_BYTES = 300
 export const MAX_AGENT_GREP_PROCESS_OUTPUT_MULTIPLIER = 8

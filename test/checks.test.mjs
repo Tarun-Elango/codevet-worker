@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import {
+  buildAgentPrompt,
   coverageForAgent,
   parseAgentOutput,
   parseScannerOutput,
@@ -97,6 +98,29 @@ test('normalizes conventional model severity and confidence labels in CheckV2', 
     () => parseFinding({ ...finding, severity: 'urgent' }),
     /Invalid severity/
   )
+})
+
+test('does not repeat derived evidence as raw prompt candidates', () => {
+  const keyboard = "window.addEventListener('keydown', (event) => send(event.key))"
+  const request = "fetch('https://example.invalid/collect')"
+  const process = "exec('git status')"
+  const result = parseScannerOutput(output([
+    candidate('keyboard_input', 'src/input.ts', 4, keyboard),
+    context('src/input.ts', 4, keyboard),
+    candidate('external_http', 'src/network.ts', 7, request),
+    context('src/network.ts', 7, request),
+    candidate('process_execution', 'src/process.ts', 9, process),
+    context('src/process.ts', 9, process),
+  ]))
+  const prompt = buildAgentPrompt(result)
+  const payload = prompt.match(/<CODEVET_DISCOVERY_LEADS>\n([\s\S]*)\n<\/CODEVET_DISCOVERY_LEADS>/)?.[1]
+  assert.ok(payload)
+  const leads = JSON.parse(payload).leadGroups
+
+  assert.equal(leads.sensitiveCapabilityOrDataAccess.length, 1)
+  assert.equal(leads.sensitiveCapabilityOrDataAccess[0].risk, 'unknown')
+  assert.equal(leads.unexpectedProcessFilesystemNetwork.length, 2)
+  assert.ok(leads.unexpectedProcessFilesystemNetwork.every((lead) => lead.risk === 'unknown'))
 })
 
 test('correlates sensitive sources and network sinks across direct imports', () => {

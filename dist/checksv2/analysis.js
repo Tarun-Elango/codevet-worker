@@ -4,7 +4,8 @@ import { MAX_AGENT_ITEMS, MAX_AGENT_OUTPUT_BYTES, MAX_AGENT_PRELOADED_FILES, MAX
 export const PI_AGENT_PACKAGE = '@earendil-works/pi-coding-agent';
 export const PI_AGENT_VERSION = '0.85.1';
 export const PI_AGENT_INTEGRITY = 'sha512-FGRN+OHbWaefBPGaTggAdLjrIHW+s2PzLyglz/5dfLzb9of7uuXMXYC0fJIeZTw+shS32o2cuQ9jF7YSDuL/oQ==';
-export const SCANNER_VERSION = `v26-investigate-verify-pi-${PI_AGENT_VERSION}`;
+// Prompt-lead normalization changes Step 2 input, so invalidate cached runs.
+export const SCANNER_VERSION = `v27-investigate-verify-pi-${PI_AGENT_VERSION}`;
 const LOW_CONFIDENCE_PATH_PATTERN = /(^|\/)(?:test|tests|__tests__|fixtures?|mocks?|docs?|examples?)\/|(?:^|\/)(?:README|CHANGELOG|LICENSE)(?:\.|$)|(?:_test\.go|\.(?:test|spec)\.[jt]sx?|\.md|\.lock|min\.js|\.map)$|(?:^|\/)node_modules\//i;
 const SOURCE_FILE_PATTERN = /\.(?:ts|tsx|js|jsx|mjs|cjs|py|go|rs|java|kt|kts|scala|sc|rb|php|ex|exs|erl|hrl|r|rmd|sol|move|c|h|cc|cpp|cxx|cs|swift|dart|lua|sh|bash|zsh|fish|ksh|dash|ps1|bat|cmd|html?|vue|svelte|ipynb)$/i;
 // Build, deployment, and package-manager configuration can execute commands
@@ -195,23 +196,114 @@ function rankedCandidates(candidates) {
     return [...candidates].sort((a, b) => candidateLeadRank(a) - candidateLeadRank(b) ||
         a.file.localeCompare(b.file) || a.line - b.line);
 }
+/** A validated behavior/call supersedes its identical raw discovery lead in
+ * prompt evidence. Keep raw candidates only when Step 1 could not derive
+ * stronger evidence from them. */
+function hasDerivedEvidence(candidate, behaviors, networkCalls) {
+    const sameCandidate = (evidence) => evidence.file === candidate.file &&
+        evidence.line === candidate.line &&
+        evidence.column === candidate.column &&
+        evidence.code === candidate.code &&
+        evidence.match === candidate.match;
+    if (candidate.category === 'external_http') {
+        return networkCalls.some(sameCandidate);
+    }
+    const behaviorCategory = candidate.category === 'credential_handling'
+        ? 'credential_input'
+        : candidate.category;
+    return behaviors.some((behavior) => behavior.category === behaviorCategory && sameCandidate(behavior));
+}
+function sameLeadLocation(left, right) {
+    return left.file === right.file &&
+        left.line === right.line &&
+        left.column === right.column &&
+        left.code === right.code &&
+        left.match === right.match;
+}
+function canonicalCandidateLead(candidate) {
+    return {
+        kind: 'candidate',
+        category: candidate.category,
+        file: candidate.file,
+        line: candidate.line,
+        column: candidate.column,
+        code: candidate.code,
+        match: candidate.match,
+    };
+}
+function canonicalBehaviorLead(behavior, candidates) {
+    const sourceCategory = candidates.find((candidate) => sameLeadLocation(candidate, behavior) &&
+        (candidate.category === behavior.category ||
+            (candidate.category === 'credential_handling' && behavior.category === 'credential_input')))?.category;
+    return {
+        kind: 'behavior',
+        category: behavior.category,
+        ...(sourceCategory ? { detectionCategory: sourceCategory } : {}),
+        risk: behavior.risk,
+        file: behavior.file,
+        line: behavior.line,
+        column: behavior.column,
+        code: behavior.code,
+        match: behavior.match,
+    };
+}
+function canonicalNetworkLead(call, candidates) {
+    const sourceCategory = candidates.find((candidate) => candidate.category === 'external_http' && sameLeadLocation(candidate, call))?.category;
+    return {
+        kind: 'network_call',
+        category: call.category,
+        ...(sourceCategory ? { detectionCategory: sourceCategory } : {}),
+        risk: call.risk,
+        destination: call.destination,
+        file: call.file,
+        line: call.line,
+        column: call.column,
+        code: call.code,
+        match: call.match,
+    };
+}
 /** Build the investigation order once so prompt evidence and trusted source
  * preloading cannot drift into using different priority rules. */
 export function buildAgentLeadIndex(result) {
     const candidates = rankedCandidates(result.candidates);
+    const rawCandidates = candidates.filter((item) => !hasDerivedEvidence(item, result.behaviors, result.networkCalls));
+    const sensitiveBehaviors = result.behaviors
+        .filter((item) => SENSITIVE_FLOW_SOURCES.includes(item.category))
+        .map((item) => canonicalBehaviorLead(item, candidates));
+    const unexpectedBehaviors = result.behaviors
+        .filter((item) => !SENSITIVE_FLOW_SOURCES.includes(item.category))
+        .map((item) => canonicalBehaviorLead(item, candidates));
+    const networkCalls = result.networkCalls.map((item) => canonicalNetworkLead(item, candidates));
     return {
-        downloadExecutePersistenceObfuscation: candidates.filter((item) => candidateLeadRank(item) === 1),
+        downloadExecutePersistenceObfuscation: rawCandidates.filter((item) => candidateLeadRank(item) === 1).map(canonicalCandidateLead),
         sensitiveCapabilityOrDataAccess: [
-            ...result.behaviors.filter((item) => SENSITIVE_FLOW_SOURCES.includes(item.category)),
-            ...candidates.filter((item) => candidateLeadRank(item) === 3),
+            ...sensitiveBehaviors,
+            ...rawCandidates.filter((item) => candidateLeadRank(item) === 3).map(canonicalCandidateLead),
         ],
         unexpectedProcessFilesystemNetwork: [
-            ...result.behaviors.filter((item) => !SENSITIVE_FLOW_SOURCES.includes(item.category)),
-            ...result.networkCalls,
-            ...candidates.filter((item) => candidateLeadRank(item) === 4),
+            ...unexpectedBehaviors,
+            ...networkCalls,
+            ...rawCandidates.filter((item) => candidateLeadRank(item) === 4).map(canonicalCandidateLead),
         ],
-        majorSecuritySinksRequiringValidation: candidates.filter((item) => candidateLeadRank(item) === 5),
+        majorSecuritySinksRequiringValidation: rawCandidates.filter((item) => candidateLeadRank(item) === 5).map(canonicalCandidateLead),
     };
+}
+/**
+ * A compact, source-free version of Step 1 for the verifier. The investigator
+ * gets full leads to perform discovery; the verifier already has that draft
+ * and source preloads, so it needs only enough deterministic context to order
+ * an independent review.
+ */
+export function buildVerifierStep1Index(leadIndex) {
+    const groups = [
+        [1, leadIndex.downloadExecutePersistenceObfuscation, 12],
+        [2, leadIndex.sensitiveCapabilityOrDataAccess, 20],
+        [3, leadIndex.unexpectedProcessFilesystemNetwork, 24],
+        [4, leadIndex.majorSecuritySinksRequiringValidation, 20],
+    ];
+    return groups.flatMap(([priority, leads, limit]) => leads.slice(0, limit).map(({ category, file, line }) => ({
+        category, file, line, priority,
+    })));
 }
 export function buildAgentFilePriorities(result, leads = buildAgentLeadIndex(result)) {
     const paths = [];

@@ -188,7 +188,8 @@ type RawDiscoveryEvent = {
 export const PI_AGENT_PACKAGE = '@earendil-works/pi-coding-agent'
 export const PI_AGENT_VERSION = '0.85.1'
 export const PI_AGENT_INTEGRITY = 'sha512-FGRN+OHbWaefBPGaTggAdLjrIHW+s2PzLyglz/5dfLzb9of7uuXMXYC0fJIeZTw+shS32o2cuQ9jF7YSDuL/oQ=='
-export const SCANNER_VERSION = `v26-investigate-verify-pi-${PI_AGENT_VERSION}`
+// Prompt-lead normalization changes Step 2 input, so invalidate cached runs.
+export const SCANNER_VERSION = `v27-investigate-verify-pi-${PI_AGENT_VERSION}`
 
 const LOW_CONFIDENCE_PATH_PATTERN =
   /(^|\/)(?:test|tests|__tests__|fixtures?|mocks?|docs?|examples?)\/|(?:^|\/)(?:README|CHANGELOG|LICENSE)(?:\.|$)|(?:_test\.go|\.(?:test|spec)\.[jt]sx?|\.md|\.lock|min\.js|\.map)$|(?:^|\/)node_modules\//i
@@ -360,13 +361,33 @@ export function emptyAgentAnalysis(
   }
 }
 
+/**
+ * The single Step 2 lead shape. Step 1 retains its richer raw and derived
+ * collections for trusted processing, but the model receives one normalized
+ * representation for each selected location. This avoids spending prompt
+ * budget on a regex hit and its interpretation as separate leads.
+ */
+export type AgentLead = {
+  kind: 'candidate' | 'behavior' | 'network_call'
+  category: CandidateCategory | BehaviorCategory | 'network_access'
+  /** Original discovery category when Step 1 derived a behavior from it. */
+  detectionCategory?: CandidateCategory
+  risk?: 'unknown'
+  destination?: string | null
+  file: string
+  line: number
+  column: number
+  code: string
+  match: string
+}
+
 type AgentPromptEvidence = {
   /** Every group is unvalidated. Object order documents investigation order. */
   leadGroups: {
-    downloadExecutePersistenceObfuscation: ScanCandidate[]
-    sensitiveCapabilityOrDataAccess: Array<ScanCandidate | BehaviorEvidence>
-    unexpectedProcessFilesystemNetwork: Array<ScanCandidate | BehaviorEvidence | NetworkCallEvidence>
-    majorSecuritySinksRequiringValidation: ScanCandidate[]
+    downloadExecutePersistenceObfuscation: AgentLead[]
+    sensitiveCapabilityOrDataAccess: AgentLead[]
+    unexpectedProcessFilesystemNetwork: AgentLead[]
+    majorSecuritySinksRequiringValidation: AgentLead[]
   }
 }
 
@@ -433,34 +454,164 @@ function rankedCandidates(candidates: ScanCandidate[]): ScanCandidate[] {
   )
 }
 
-type AgentLead = ScanCandidate | BehaviorEvidence | NetworkCallEvidence
+/** A validated behavior/call supersedes its identical raw discovery lead in
+ * prompt evidence. Keep raw candidates only when Step 1 could not derive
+ * stronger evidence from them. */
+function hasDerivedEvidence(
+  candidate: ScanCandidate,
+  behaviors: BehaviorEvidence[],
+  networkCalls: NetworkCallEvidence[]
+): boolean {
+  const sameCandidate = (evidence: { file: string; line: number; column: number; code: string; match: string }) =>
+    evidence.file === candidate.file &&
+    evidence.line === candidate.line &&
+    evidence.column === candidate.column &&
+    evidence.code === candidate.code &&
+    evidence.match === candidate.match
+
+  if (candidate.category === 'external_http') {
+    return networkCalls.some(sameCandidate)
+  }
+
+  const behaviorCategory = candidate.category === 'credential_handling'
+    ? 'credential_input'
+    : candidate.category
+  return behaviors.some((behavior) =>
+    behavior.category === behaviorCategory && sameCandidate(behavior)
+  )
+}
+
+function sameLeadLocation(
+  left: { file: string; line: number; column: number; code: string; match: string },
+  right: { file: string; line: number; column: number; code: string; match: string }
+): boolean {
+  return left.file === right.file &&
+    left.line === right.line &&
+    left.column === right.column &&
+    left.code === right.code &&
+    left.match === right.match
+}
+
+function canonicalCandidateLead(candidate: ScanCandidate): AgentLead {
+  return {
+    kind: 'candidate',
+    category: candidate.category,
+    file: candidate.file,
+    line: candidate.line,
+    column: candidate.column,
+    code: candidate.code,
+    match: candidate.match,
+  }
+}
+
+function canonicalBehaviorLead(
+  behavior: BehaviorEvidence,
+  candidates: ScanCandidate[]
+): AgentLead {
+  const sourceCategory = candidates.find((candidate) =>
+    sameLeadLocation(candidate, behavior) &&
+    (candidate.category === behavior.category ||
+      (candidate.category === 'credential_handling' && behavior.category === 'credential_input'))
+  )?.category
+  return {
+    kind: 'behavior',
+    category: behavior.category,
+    ...(sourceCategory ? { detectionCategory: sourceCategory } : {}),
+    risk: behavior.risk,
+    file: behavior.file,
+    line: behavior.line,
+    column: behavior.column,
+    code: behavior.code,
+    match: behavior.match,
+  }
+}
+
+function canonicalNetworkLead(
+  call: NetworkCallEvidence,
+  candidates: ScanCandidate[]
+): AgentLead {
+  const sourceCategory = candidates.find((candidate) =>
+    candidate.category === 'external_http' && sameLeadLocation(candidate, call)
+  )?.category
+  return {
+    kind: 'network_call',
+    category: call.category,
+    ...(sourceCategory ? { detectionCategory: sourceCategory } : {}),
+    risk: call.risk,
+    destination: call.destination,
+    file: call.file,
+    line: call.line,
+    column: call.column,
+    code: call.code,
+    match: call.match,
+  }
+}
 
 export type AgentLeadIndex = {
-  downloadExecutePersistenceObfuscation: ScanCandidate[]
-  sensitiveCapabilityOrDataAccess: Array<ScanCandidate | BehaviorEvidence>
+  downloadExecutePersistenceObfuscation: AgentLead[]
+  sensitiveCapabilityOrDataAccess: AgentLead[]
   unexpectedProcessFilesystemNetwork: AgentLead[]
-  majorSecuritySinksRequiringValidation: ScanCandidate[]
+  majorSecuritySinksRequiringValidation: AgentLead[]
 }
 
 /** Build the investigation order once so prompt evidence and trusted source
  * preloading cannot drift into using different priority rules. */
 export function buildAgentLeadIndex(result: ScannerResult): AgentLeadIndex {
   const candidates = rankedCandidates(result.candidates)
+  const rawCandidates = candidates.filter((item) =>
+    !hasDerivedEvidence(item, result.behaviors, result.networkCalls)
+  )
+  const sensitiveBehaviors = result.behaviors
+    .filter((item) => SENSITIVE_FLOW_SOURCES.includes(item.category))
+    .map((item) => canonicalBehaviorLead(item, candidates))
+  const unexpectedBehaviors = result.behaviors
+    .filter((item) => !SENSITIVE_FLOW_SOURCES.includes(item.category))
+    .map((item) => canonicalBehaviorLead(item, candidates))
+  const networkCalls = result.networkCalls.map((item) => canonicalNetworkLead(item, candidates))
   return {
     downloadExecutePersistenceObfuscation:
-      candidates.filter((item) => candidateLeadRank(item) === 1),
+      rawCandidates.filter((item) => candidateLeadRank(item) === 1).map(canonicalCandidateLead),
     sensitiveCapabilityOrDataAccess: [
-      ...result.behaviors.filter((item) => SENSITIVE_FLOW_SOURCES.includes(item.category)),
-      ...candidates.filter((item) => candidateLeadRank(item) === 3),
+      ...sensitiveBehaviors,
+      ...rawCandidates.filter((item) => candidateLeadRank(item) === 3).map(canonicalCandidateLead),
     ],
     unexpectedProcessFilesystemNetwork: [
-      ...result.behaviors.filter((item) => !SENSITIVE_FLOW_SOURCES.includes(item.category)),
-      ...result.networkCalls,
-      ...candidates.filter((item) => candidateLeadRank(item) === 4),
+      ...unexpectedBehaviors,
+      ...networkCalls,
+      ...rawCandidates.filter((item) => candidateLeadRank(item) === 4).map(canonicalCandidateLead),
     ],
     majorSecuritySinksRequiringValidation:
-      candidates.filter((item) => candidateLeadRank(item) === 5),
+      rawCandidates.filter((item) => candidateLeadRank(item) === 5).map(canonicalCandidateLead),
   }
+}
+
+export type VerifierStep1IndexEntry = {
+  category: AgentLead['category']
+  file: string
+  line: number
+  priority: 1 | 2 | 3 | 4
+}
+
+/**
+ * A compact, source-free version of Step 1 for the verifier. The investigator
+ * gets full leads to perform discovery; the verifier already has that draft
+ * and source preloads, so it needs only enough deterministic context to order
+ * an independent review.
+ */
+export function buildVerifierStep1Index(
+  leadIndex: AgentLeadIndex
+): VerifierStep1IndexEntry[] {
+  const groups: Array<[1 | 2 | 3 | 4, readonly AgentLead[], number]> = [
+    [1, leadIndex.downloadExecutePersistenceObfuscation, 12],
+    [2, leadIndex.sensitiveCapabilityOrDataAccess, 20],
+    [3, leadIndex.unexpectedProcessFilesystemNetwork, 24],
+    [4, leadIndex.majorSecuritySinksRequiringValidation, 20],
+  ]
+  return groups.flatMap(([priority, leads, limit]) =>
+    leads.slice(0, limit).map(({ category, file, line }) => ({
+      category, file, line, priority,
+    }))
+  )
 }
 
 export function buildAgentFilePriorities(
