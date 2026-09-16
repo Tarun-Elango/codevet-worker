@@ -1,5 +1,6 @@
 import {
   buildAgentFilePriorities,
+  buildAgentLeadIndex,
   buildAgentPrompt,
   emptyAgentAnalysis,
   parseAgentOutput,
@@ -198,9 +199,11 @@ export async function runSandboxStep2(
   scannerResult: ScannerResult,
   agent: { provider: string; model: string; apiKey: string; piKeyEnv: string }
 ): Promise<AgentAnalysis> {
-  const step1Prompt = buildAgentPrompt(scannerResult)
+  const leadIndex = buildAgentLeadIndex(scannerResult)
+  const step1Prompt = buildAgentPrompt(scannerResult, leadIndex)
   const investigation = await runAgentPass(
-    sandbox, uid, scannerResult, agent, buildAgentFilePriorities(scannerResult), step1Prompt,
+    sandbox, uid, scannerResult, agent,
+    buildAgentFilePriorities(scannerResult, leadIndex), step1Prompt,
     AGENT_SYSTEM_PROMPT, 'investigator'
   )
   if (investigation.status !== 'completed') return investigation
@@ -232,7 +235,9 @@ export async function runSandboxStep2(
     ]),
     ...investigation.externalServices.flatMap((service) => service.file ? [service.file] : []),
   ]
-  const verifierPriorities = [...new Set([...citedFiles, ...buildAgentFilePriorities(scannerResult)])]
+  const verifierPriorities = [
+    ...new Set([...citedFiles, ...buildAgentFilePriorities(scannerResult, leadIndex)]),
+  ]
   const verification = await runAgentPass(
     sandbox, uid, scannerResult, agent, verifierPriorities, verifierPrompt,
     VERIFIER_SYSTEM_PROMPT, 'verifier'

@@ -1,4 +1,4 @@
-import { buildAgentFilePriorities, buildAgentPrompt, emptyAgentAnalysis, parseAgentOutput, redactSensitiveText, } from './analysis.js';
+import { buildAgentFilePriorities, buildAgentLeadIndex, buildAgentPrompt, emptyAgentAnalysis, parseAgentOutput, redactSensitiveText, } from './analysis.js';
 import { AGENT_SYSTEM_PROMPT, VERIFIER_SYSTEM_PROMPT, AGENT_TIMEOUT_SEC, MAX_AGENT_OUTPUT_BYTES, MAX_VERIFIER_PROMPT_BYTES, MIN_FILES_TO_INSPECT, } from './limits.js';
 /** Run one isolated Pi role. The investigator and verifier never share a Pi
  * session; the verifier receives bounded Step 1 leads, the draft, and repository tools. */
@@ -157,8 +157,9 @@ async function runAgentPass(sandbox, uid, scannerResult, agent, priorityFiles, p
 /** Step 2 — separate discovery from adjudication. A verifier gets a fresh
  * context and must independently check the investigator's cited source. */
 export async function runSandboxStep2(sandbox, uid, scannerResult, agent) {
-    const step1Prompt = buildAgentPrompt(scannerResult);
-    const investigation = await runAgentPass(sandbox, uid, scannerResult, agent, buildAgentFilePriorities(scannerResult), step1Prompt, AGENT_SYSTEM_PROMPT, 'investigator');
+    const leadIndex = buildAgentLeadIndex(scannerResult);
+    const step1Prompt = buildAgentPrompt(scannerResult, leadIndex);
+    const investigation = await runAgentPass(sandbox, uid, scannerResult, agent, buildAgentFilePriorities(scannerResult, leadIndex), step1Prompt, AGENT_SYSTEM_PROMPT, 'investigator');
     if (investigation.status !== 'completed')
         return investigation;
     // The verifier receives every investigator claim while reserving its input
@@ -187,7 +188,9 @@ export async function runSandboxStep2(sandbox, uid, scannerResult, agent) {
         ]),
         ...investigation.externalServices.flatMap((service) => service.file ? [service.file] : []),
     ];
-    const verifierPriorities = [...new Set([...citedFiles, ...buildAgentFilePriorities(scannerResult)])];
+    const verifierPriorities = [
+        ...new Set([...citedFiles, ...buildAgentFilePriorities(scannerResult, leadIndex)]),
+    ];
     const verification = await runAgentPass(sandbox, uid, scannerResult, agent, verifierPriorities, verifierPrompt, VERIFIER_SYSTEM_PROMPT, 'verifier');
     return verification;
 }

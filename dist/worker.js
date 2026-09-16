@@ -169,8 +169,7 @@ export async function processRequest(pool, channel, msg, job) {
             : [];
         console.log(`[${uid}] Analysis: ` +
             `${deterministicIssues.length} deterministic finding(s), ` +
-            `${aiIssues.length} AI security issue(s), ` +
-            `${scannerResult.candidateFlows.length} candidate flow(s)`);
+            `${aiIssues.length} AI security issue(s)`);
         const storedFindings = {
             deterministic: scannerResult.securityFindings,
             aiSecurityIssues: scannerResult.agentAnalysis?.securityIssues ?? [],
@@ -180,7 +179,6 @@ export async function processRequest(pool, channel, msg, job) {
             // existing arrays so clients do not mistake a risk of "none" for a
             // repository-wide safety guarantee.
             agentAnalysis: scannerResult.agentAnalysis,
-            candidateFlows: scannerResult.candidateFlows,
         };
         await lockClient.query(`
         INSERT INTO repo_results (

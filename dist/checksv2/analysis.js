@@ -195,50 +195,48 @@ function rankedCandidates(candidates) {
     return [...candidates].sort((a, b) => candidateLeadRank(a) - candidateLeadRank(b) ||
         a.file.localeCompare(b.file) || a.line - b.line);
 }
-export function buildAgentFilePriorities(result) {
+/** Build the investigation order once so prompt evidence and trusted source
+ * preloading cannot drift into using different priority rules. */
+export function buildAgentLeadIndex(result) {
+    const candidates = rankedCandidates(result.candidates);
+    return {
+        downloadExecutePersistenceObfuscation: candidates.filter((item) => candidateLeadRank(item) === 1),
+        sensitiveCapabilityOrDataAccess: [
+            ...result.behaviors.filter((item) => SENSITIVE_FLOW_SOURCES.includes(item.category)),
+            ...candidates.filter((item) => candidateLeadRank(item) === 3),
+        ],
+        unexpectedProcessFilesystemNetwork: [
+            ...result.behaviors.filter((item) => !SENSITIVE_FLOW_SOURCES.includes(item.category)),
+            ...result.networkCalls,
+            ...candidates.filter((item) => candidateLeadRank(item) === 4),
+        ],
+        majorSecuritySinksRequiringValidation: candidates.filter((item) => candidateLeadRank(item) === 5),
+    };
+}
+export function buildAgentFilePriorities(result, leads = buildAgentLeadIndex(result)) {
     const paths = [];
     const seen = new Set();
     const add = (value) => {
-        if (!value)
-            return;
         const normalized = normalizePath(value);
         if (!normalized || seen.has(normalized))
             return;
         seen.add(normalized);
         paths.push(normalized);
     };
-    // 1. Download/execute, persistence, and obfuscation leads.
-    for (const candidate of rankedCandidates(result.candidates).filter((item) => candidateLeadRank(item) === 1))
-        add(candidate.file);
-    // 2. Possible sensitive-data/network relationships. These are navigation
-    // leads only; Step 2 must trace the actual value flow.
-    for (const flow of result.candidateFlows) {
-        add(flow.evidence.source.file);
-        add(flow.evidence.sink.file);
-        for (const file of flow.files)
-            add(file);
-    }
-    // 3. Sensitive capabilities and data access.
-    for (const behavior of result.behaviors.filter((item) => SENSITIVE_FLOW_SOURCES.includes(item.category)))
-        add(behavior.file);
-    for (const candidate of rankedCandidates(result.candidates).filter((item) => candidateLeadRank(item) === 3))
-        add(candidate.file);
-    // 4. Unexpected process/filesystem/network activity.
-    for (const behavior of result.behaviors.filter((item) => !SENSITIVE_FLOW_SOURCES.includes(item.category)))
-        add(behavior.file);
-    for (const candidate of rankedCandidates(result.candidates).filter((item) => candidateLeadRank(item) === 4))
-        add(candidate.file);
-    for (const call of result.networkCalls)
-        add(call.file);
-    // 5. Context-dependent major-security sinks. Deterministic secret findings
-    // are deliberately excluded from AI input and preloading.
-    for (const candidate of rankedCandidates(result.candidates).filter((item) => candidateLeadRank(item) === 5))
-        add(candidate.file);
-    // The sandbox validates paths and fills spare slots with metadata/source
-    // files. Step 2 can discover further files with bounded read/grep tools.
+    const addFiles = (leads) => {
+        for (const lead of leads)
+            add(lead.file);
+    };
+    // Deterministic secret findings are deliberately excluded from AI input and
+    // preloading. The sandbox validates paths and fills spare slots with
+    // metadata/source files; Step 2 can discover more with bounded tools.
+    addFiles(leads.downloadExecutePersistenceObfuscation);
+    addFiles(leads.sensitiveCapabilityOrDataAccess);
+    addFiles(leads.unexpectedProcessFilesystemNetwork);
+    addFiles(leads.majorSecuritySinksRequiringValidation);
     return paths.slice(0, MAX_AGENT_PRELOADED_FILES * 3);
 }
-export function buildAgentPrompt(result) {
+export function buildAgentPrompt(result, leadIndex = buildAgentLeadIndex(result)) {
     // The deterministic payload is data-delimited and intentionally not added to
     // the system prompt. Budget structured evidence before serialization: never
     // slice serialized JSON, which can produce malformed JSON or exceed a UTF-8
@@ -251,7 +249,6 @@ export function buildAgentPrompt(result) {
     const leads = {
         leadGroups: {
             downloadExecutePersistenceObfuscation: [],
-            possibleSensitiveEgress: [],
             sensitiveCapabilityOrDataAccess: [],
             unexpectedProcessFilesystemNetwork: [],
             majorSecuritySinksRequiringValidation: [],
@@ -268,22 +265,12 @@ export function buildAgentPrompt(result) {
         }
     };
     const bounded = (value) => boundPromptValue(value);
-    // Evidence follows the investigation order: suspicious behavior, possible
-    // sensitive egress, unexpected activity, and finally major-security sinks.
+    // Evidence and trusted source preloading use the same investigation order.
     // Step 2 gets source context from preloaded files and bounded read/grep.
-    const candidates = rankedCandidates(result.candidates);
-    addItems(leads.leadGroups.downloadExecutePersistenceObfuscation, candidates.filter((item) => candidateLeadRank(item) === 1).slice(0, 12).map(bounded));
-    addItems(leads.leadGroups.possibleSensitiveEgress, result.candidateFlows.slice(0, 12).map(bounded));
-    addItems(leads.leadGroups.sensitiveCapabilityOrDataAccess, [
-        ...result.behaviors.filter((item) => SENSITIVE_FLOW_SOURCES.includes(item.category)),
-        ...candidates.filter((item) => candidateLeadRank(item) === 3),
-    ].slice(0, 20).map(bounded));
-    addItems(leads.leadGroups.unexpectedProcessFilesystemNetwork, [
-        ...result.behaviors.filter((item) => !SENSITIVE_FLOW_SOURCES.includes(item.category)),
-        ...result.networkCalls,
-        ...candidates.filter((item) => candidateLeadRank(item) === 4),
-    ].slice(0, 24).map(bounded));
-    addItems(leads.leadGroups.majorSecuritySinksRequiringValidation, candidates.filter((item) => candidateLeadRank(item) === 5).slice(0, 20).map(bounded));
+    addItems(leads.leadGroups.downloadExecutePersistenceObfuscation, leadIndex.downloadExecutePersistenceObfuscation.slice(0, 12).map(bounded));
+    addItems(leads.leadGroups.sensitiveCapabilityOrDataAccess, leadIndex.sensitiveCapabilityOrDataAccess.slice(0, 20).map(bounded));
+    addItems(leads.leadGroups.unexpectedProcessFilesystemNetwork, leadIndex.unexpectedProcessFilesystemNetwork.slice(0, 24).map(bounded));
+    addItems(leads.leadGroups.majorSecuritySinksRequiringValidation, leadIndex.majorSecuritySinksRequiringValidation.slice(0, 20).map(bounded));
     const json = JSON.stringify(leads);
     if (Buffer.byteLength(json) > evidenceBudget) {
         throw new Error('agent evidence exceeds prompt budget');
@@ -723,75 +710,6 @@ function analyzeCandidates(candidates, linesByFile) {
     }
     return { securityFindings, behaviors, networkCalls };
 }
-const SAME_FILE_CORRELATION_SCORE = 0.6;
-/**
- * Return only structural evidence strong enough to surface as a flow lead.
- * Directory and top-level-folder membership are organizational conventions,
- * not evidence of a data flow, so they deliberately produce no correlation.
- *
- * Future AST/LSP analysis can add stronger same-function, import, and call
- * graph relationships through this single scored representation.
- */
-function correlateEvidence(sourceFile, sinkFile, imports) {
-    const source = normalizePath(sourceFile);
-    const sink = normalizePath(sinkFile);
-    if (source === sink)
-        return { kind: 'same_file', score: SAME_FILE_CORRELATION_SCORE };
-    // A direct local import is retained only as a compact navigation link.
-    // Do not infer transitive/call-graph flow from chains of import statements:
-    // imports establish code structure, not that a sensitive value is passed.
-    for (const edge of imports) {
-        const from = normalizePath(edge.from), to = normalizePath(edge.to);
-        if ((from === source && to === sink) || (from === sink && to === source)) {
-            return { kind: 'direct_import', score: 0.5 };
-        }
-    }
-    return null;
-}
-/**
- * STEP J — Produce only same-file/direct-import navigation leads. No line
- * proximity or transitive-import relationship is treated as data flow.
- */
-function correlateFindings(behaviors, networkCalls, imports) {
-    const flows = [];
-    const sources = behaviors.filter((behavior) => SENSITIVE_FLOW_SOURCES.includes(behavior.category));
-    const seen = new Set();
-    for (const source of sources) {
-        for (const sink of networkCalls) {
-            const correlation = correlateEvidence(source.file, sink.file, imports);
-            if (!correlation) {
-                continue;
-            }
-            const key = `${source.category}:${source.file}:${source.line}->${sink.file}:${sink.line}`;
-            if (seen.has(key)) {
-                continue;
-            }
-            seen.add(key);
-            flows.push({
-                type: 'possible_sensitive_flow',
-                source: source.category,
-                sink: 'network_access',
-                correlation,
-                files: [...new Set([source.file, sink.file])],
-                reason: `Sensitive input handling and outbound network activity are structurally related (${correlation.kind}); verify whether data reaches the destination.`,
-                evidence: {
-                    source: {
-                        file: source.file,
-                        line: source.line,
-                        code: source.code,
-                    },
-                    sink: {
-                        file: sink.file,
-                        line: sink.line,
-                        code: sink.code,
-                        destination: sink.destination,
-                    },
-                },
-            });
-        }
-    }
-    return flows;
-}
 function addContextSnippet(snippets, evidence, linesByFile) {
     if (snippets.some((snippet) => snippet.file === evidence.file &&
         snippet.findingLine === evidence.line)) {
@@ -1049,7 +967,6 @@ export function parseScannerOutput(stdout) {
     // Secret presence is the sole independent deterministic product check;
     // every context-dependent security sink is left for Step 2 validation.
     const securityFindings = secretPresenceSecurityFindings(secretFindings);
-    const candidateFlows = correlateFindings(analysis.behaviors, analysis.networkCalls, imports);
     // Secret-file content is never present in linesByFile, and therefore never
     // appears in context snippets or AI input.
     const snippets = collectSnippets([], analysis.behaviors, analysis.networkCalls, linesByFile);
@@ -1060,7 +977,6 @@ export function parseScannerOutput(stdout) {
         securityFindings,
         behaviors: analysis.behaviors,
         networkCalls: analysis.networkCalls,
-        candidateFlows,
         imports,
         snippets,
         findings: securityFindings,
