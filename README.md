@@ -19,3 +19,8 @@ npm run dev
 ```
 
 Health check: `http://localhost:3000/health`.
+
+## How scanning works
+
+1. **Deterministic code scan** — checks for exposed secrets and identifies code patterns that may indicate suspicious behavior or major security risks.
+2. **Pi agent review** — investigates those leads and explores the repository in an isolated sandbox using read-only file tools, with no code execution or file editing. Sensitive files are excluded. It judges behavior in context, and a separate verifier checks the findings against the source before the final report.
